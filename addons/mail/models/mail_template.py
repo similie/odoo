@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import babel
 import base64
 import copy
 import datetime
@@ -16,6 +17,13 @@ from odoo import report as odoo_report
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+
+def format_date(env, date, pattern=False):
+    try:
+        return tools.format_date(env, date, date_format=pattern)
+    except babel.core.UnknownLocaleError:
+        return date
 
 
 def format_tz(env, dt, tz=False, format=False):
@@ -106,7 +114,7 @@ class MailTemplate(models.Model):
     def default_get(self, fields):
         res = super(MailTemplate, self).default_get(fields)
         if res.get('model'):
-            res['model_id'] = self.env['ir.model'].search([('model', '=', res.pop('model'))]).id
+            res['model_id'] = self.env['ir.model']._get(res.pop('model')).id
         return res
 
     name = fields.Char('Name')
@@ -201,9 +209,9 @@ class MailTemplate(models.Model):
     def onchange_sub_model_object_value_field(self):
         if self.model_object_field:
             if self.model_object_field.ttype in ['many2one', 'one2many', 'many2many']:
-                models = self.env['ir.model'].search([('model', '=', self.model_object_field.relation)])
-                if models:
-                    self.sub_object = models.id
+                model = self.env['ir.model']._get(self.model_object_field.relation)
+                if model:
+                    self.sub_object = model.id
                     self.copyvalue = self.build_expression(self.model_object_field.name, self.sub_model_object_field and self.sub_model_object_field.name or False, self.null_value or False)
             else:
                 self.sub_object = False
@@ -285,7 +293,7 @@ class MailTemplate(models.Model):
             html = '<div>%s</div>' % html
             root = lxml.html.fromstring(html)
 
-        base_url = self.env['ir.config_parameter'].get_param('web.base.url')
+        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
         (base_scheme, base_netloc, bpath, bparams, bquery, bfragment) = urlparse.urlparse(base_url)
 
         def _process_link(url):
@@ -350,6 +358,7 @@ class MailTemplate(models.Model):
         for record in records:
             res_to_rec[record.id] = record
         variables = {
+            'format_date': lambda date, format=False, context=self._context: format_date(self.env, date, format),
             'format_tz': lambda dt, tz=False, format=False, context=self._context: format_tz(self.env, dt, tz, format),
             'user': self.env.user,
             'ctx': self._context,  # context kw would clash with mako internals

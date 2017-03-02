@@ -5,7 +5,7 @@ from odoo import api, fields, models, tools, _
 from odoo.exceptions import AccessError, MissingError
 from odoo.tools import pickle
 
-EXCLUDED_FIELDS = set((
+EXCLUDED_FIELDS = set(('code',
     'report_sxw_content', 'report_rml_content', 'report_sxw', 'report_rml',
     'report_sxw_content_data', 'report_rml_content_data', 'search_view', ))
 
@@ -149,9 +149,8 @@ class IrValues(models.Model):
     @api.model_cr_context
     def _auto_init(self):
         res = super(IrValues, self)._auto_init()
-        self._cr.execute("SELECT indexname FROM pg_indexes WHERE indexname = 'ir_values_key_model_key2_res_id_user_id_idx'")
-        if not self._cr.fetchone():
-            self._cr.execute("CREATE INDEX ir_values_key_model_key2_res_id_user_id_idx ON ir_values (key, model, key2, res_id, user_id)")
+        tools.create_index(self._cr, 'ir_values_key_model_key2_res_id_user_id_idx',
+                           self._table, ['key', 'model', 'key2', 'res_id', 'user_id'])
         return res
 
     @api.model

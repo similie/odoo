@@ -20,7 +20,7 @@
                             <span class='badge'><t t-esc="project_count"/></span>
                         </t>
                         <t t-if="not project_count">
-                            There are currently no projects for your account.
+                            There are currently no projects.
                         </t>
                     </small>
                 </a>
@@ -32,7 +32,7 @@
                             <span class='badge'><t t-esc="task_count"/></span>
                         </t>
                         <t t-if="not task_count">
-                            There are currently no quotes for your account.
+                            There are currently no quotes.
                         </t>
                     </small>
                 </a>
@@ -54,7 +54,7 @@
                 </div>
             </t>
             <div t-if="projects" class="panel panel-default">
-                <table class="table table-hover status_table">
+                <div class="table-responsive"><table class="table table-hover status_table">
                     <thead>
                         <tr class="active">
                             <th class="col-md-6">Name</th>
@@ -74,7 +74,7 @@
                             </td>
                         </tr>
                     </tbody>
-                </table>
+                </table></div>
             </div>
             <div t-if="pager" class="o_portal_pager text-center">
                 <t t-call="website.pager"/>
@@ -103,6 +103,7 @@
                                 <div class="row">
                                     <div class="col-md-12">
                                         <h4>
+                                            <t t-call='website_portal.record_pager'/>
                                             Project - <span t-field="project.name"/>
                                         </h4>
                                     </div>
@@ -165,7 +166,7 @@
                 </div>
             </t>
             <div t-if="tasks" class="panel panel-default">
-                <table class="table table-hover status_table">
+                <div class="table-responsive"><table class="table table-hover status_table">
                     <thead>
                         <tr class="active">
                             <th class="col-md-10">Task</th>
@@ -184,7 +185,7 @@
                             </tr>
                         </t>
                     </tbody>
-                </table>
+                </table></div>
             </div>
             <div t-if="pager" class="o_portal_pager text-center">
                 <t t-call="website.pager"/>
@@ -213,6 +214,7 @@
                                 <div class="row">
                                     <div class="col-md-12">
                                         <h4>
+                                            <t t-call='website_portal.record_pager'/>
                                             Task - <span t-field="task.name"/>
                                             <span t-field="task.stage_id.name" class="pull-right label label-info" title="Current stage of this task"/>
                                             <a class="btn btn-info" t-att-href="'/web#return_label=Website&amp;model=project.task&amp;id=%s&amp;view_type=form' % (task.id)" groups="project.group_project_user">Edit Task</a>

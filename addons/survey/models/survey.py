@@ -53,7 +53,7 @@ class Survey(models.Model):
     _name = 'survey.survey'
     _description = 'Survey'
     _rec_name = 'title'
-    _inherit = ['mail.thread', 'ir.needaction_mixin']
+    _inherit = ['mail.thread', 'mail.activity.mixin']
 
     def _default_stage(self):
         return self.env['survey.stage'].search([], limit=1).id
@@ -104,7 +104,8 @@ class Survey(models.Model):
 
     def _compute_survey_url(self):
         """ Computes a public URL for the survey """
-        base_url = '/' if self.env.context.get('relative_url') else self.env['ir.config_parameter'].get_param('web.base.url')
+        base_url = '/' if self.env.context.get('relative_url') else \
+                   self.env['ir.config_parameter'].sudo().get_param('web.base.url')
         for survey in self:
             survey.public_url = urljoin(base_url, "survey/start/%s" % (slug(survey)))
             survey.print_url = urljoin(base_url, "survey/print/%s" % (slug(survey)))
@@ -637,7 +638,7 @@ class SurveyQuestion(models.Model):
             if self.comments_allowed:
                 comment_answer = answer_candidates.pop(("%s_%s" % (answer_tag, 'comment')), '').strip()
             # Preventing answers with blank value
-            if all([True if not answer.strip() else False for answer in answer_candidates.values()]):
+            if all([True if not answer.strip() else False for answer in answer_candidates.values()]) and answer_candidates:
                 errors.update({answer_tag: self.constr_error_msg})
             # There is no answer neither comments (if comments count as answer)
             if not answer_candidates and self.comment_count_as_answer and (not comment_flag or not comment_answer):

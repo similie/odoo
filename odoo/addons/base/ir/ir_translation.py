@@ -5,7 +5,7 @@ import logging
 from collections import defaultdict
 from difflib import get_close_matches
 
-from odoo import api, fields, models, tools, _
+from odoo import api, fields, models, tools, SUPERUSER_ID, _
 from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.modules import get_module_path, get_module_resource
 
@@ -121,12 +121,21 @@ class IrTranslationImport(object):
         # referencing non-existent data.
         cr.execute("DELETE FROM %s WHERE res_id IS NULL AND module IS NOT NULL" % self._table)
 
+        # detect the xml_translate fields, where the src must be the same
+        env = api.Environment(cr, SUPERUSER_ID, {})
+        src_relevant_fields = []
+        for model in env:
+            for field_name, field in env[model]._fields.items():
+                if hasattr(field, 'translate') and callable(field.translate):
+                    src_relevant_fields.append("%s,%s" % (model, field_name))
+
         find_expr = """
                 irt.lang = ti.lang
             AND irt.type = ti.type
             AND irt.name = ti.name
             AND (
-                    (ti.type = 'model' AND ti.res_id = irt.res_id AND irt.src = ti.src)
+                    (ti.type = 'model' AND ti.res_id = irt.res_id AND ti.name IN %s AND irt.src = ti.src)
+                 OR (ti.type = 'model' AND ti.res_id = irt.res_id AND ti.name NOT IN %s)
                  OR (ti.type = 'view' AND (irt.res_id IS NULL OR ti.res_id = irt.res_id) AND irt.src = ti.src)
                  OR (ti.type = 'field')
                  OR (ti.type = 'help')
@@ -142,20 +151,23 @@ class IrTranslationImport(object):
                                state = 'translated'
                            FROM %s AS ti
                            WHERE %s AND ti.value IS NOT NULL AND ti.value != ''
-                       """ % (self._model_table, self._table, find_expr))
+                       """ % (self._model_table, self._table, find_expr),
+                       (tuple(src_relevant_fields), tuple(src_relevant_fields)))
 
         # Step 3: insert new translations
         cr.execute(""" INSERT INTO %s(name, lang, res_id, src, type, value, module, state, comments)
                        SELECT name, lang, res_id, src, type, value, module, state, comments
                        FROM %s AS ti
                        WHERE NOT EXISTS(SELECT 1 FROM ONLY %s AS irt WHERE %s);
-                   """ % (self._model_table, self._table, self._model_table, find_expr))
+                   """ % (self._model_table, self._table, self._model_table, find_expr),
+                   (tuple(src_relevant_fields), tuple(src_relevant_fields)))
 
         if self._debug:
             cr.execute("SELECT COUNT(*) FROM ONLY %s" % self._model_table)
             total = cr.fetchone()[0]
             cr.execute("SELECT COUNT(*) FROM ONLY %s AS irt, %s AS ti WHERE %s" % \
-                       (self._model_table, self._table, find_expr))
+                       (self._model_table, self._table, find_expr),
+                       (tuple(src_relevant_fields), tuple(src_relevant_fields)))
             count = cr.fetchone()[0]
             _logger.debug("ir.translation.cursor: %d entries now in ir.translation, %d common entries with tmp", total, count)
 
@@ -243,29 +255,9 @@ class IrTranslation(models.Model):
     @api.model_cr_context
     def _auto_init(self):
         res = super(IrTranslation, self)._auto_init()
-        cr = self._cr
-
-        cr.execute("SELECT indexname FROM pg_indexes WHERE indexname LIKE 'ir_translation_%'")
-        indexes = [row[0] for row in cr.fetchall()]
-
-        # Removed because there is a size limit on btree indexed values (problem with column src):
-        # cr.execute('CREATE INDEX ir_translation_ltns ON ir_translation (name, lang, type, src)')
-        # cr.execute('CREATE INDEX ir_translation_lts ON ir_translation (lang, type, src)')
-        #
-        # Removed because hash indexes are not compatible with postgres streaming replication:
-        # cr.execute('CREATE INDEX ir_translation_src_hash_idx ON ir_translation USING hash (src)')
-        if set(indexes) & set(['ir_translation_ltns', 'ir_translation_lts', 'ir_translation_src_hash_idx']):
-            cr.execute('DROP INDEX IF EXISTS ir_translation_ltns, ir_translation_lts, ir_translation_src_hash_idx')
-            cr.commit()
-
         # Add separate md5 index on src (no size limit on values, and good performance).
-        if 'ir_translation_src_md5' not in indexes:
-            cr.execute('CREATE INDEX ir_translation_src_md5 ON ir_translation (md5(src))')
-            cr.commit()
-
-        if 'ir_translation_ltn' not in indexes:
-            cr.execute('CREATE INDEX ir_translation_ltn ON ir_translation (name, lang, type)')
-            cr.commit()
+        tools.create_index(self._cr, 'ir_translation_src_md5', self._table, ['md5(src)'])
+        tools.create_index(self._cr, 'ir_translation_ltn', self._table, ['name', 'lang', 'type'])
         return res
 
     @api.model
@@ -489,7 +481,7 @@ class IrTranslation(models.Model):
         :param model_name: the name of a model
         :return: the model's fields' strings as a dictionary `{field_name: field_string}`
         """
-        fields = self.env['ir.model.fields'].search([('model', '=', model_name)])
+        fields = self.env['ir.model.fields'].sudo().search([('model', '=', model_name)])
         return {field.name: field.field_description for field in fields}
 
     @api.model
@@ -501,7 +493,7 @@ class IrTranslation(models.Model):
         :param model_name: the name of a model
         :return: the model's fields' help as a dictionary `{field_name: field_help}`
         """
-        fields = self.env['ir.model.fields'].search([('model', '=', model_name)])
+        fields = self.env['ir.model.fields'].sudo().search([('model', '=', model_name)])
         return {field.name: field.help for field in fields}
 
     @api.multi

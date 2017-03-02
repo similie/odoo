@@ -25,7 +25,6 @@ class Location(models.Model):
         return res
 
     name = fields.Char('Location Name', required=True, translate=True)
-    # TDE CLEAME: unnecessary field, use name_get instead
     complete_name = fields.Char("Full Location Name", compute='_compute_complete_name', store=True)
     active = fields.Boolean('Active', default=True, help="By unchecking the active field, you may hide a location without deleting it.")
     usage = fields.Selection([
@@ -75,14 +74,22 @@ class Location(models.Model):
         """ Forms complete name of location from parent location to child location. """
         name = self.name
         current = self
-        while current.location_id and current.usage != 'view':
+        while current.location_id:
             current = current.location_id
             name = '%s/%s' % (current.name, name)
         self.complete_name = name
 
     @api.multi
     def name_get(self):
-        return [(location.id, location.complete_name) for location in self]
+        ret_list = []
+        for location in self:
+            orig_location = location
+            name = location.name
+            while location.location_id and location.usage != 'view':
+                location = location.location_id
+                name = location.name + "/" + name
+            ret_list.append((orig_location.id, name))
+        return ret_list
 
     def get_putaway_strategy(self, product):
         ''' Returns the location where the product has to be put, if any compliant putaway strategy is found. Otherwise returns None.'''
@@ -165,13 +172,13 @@ class Route(models.Model):
 class PushedFlow(models.Model):
     _name = "stock.location.path"
     _description = "Pushed Flow"
-    _order = "name"
+    _order = "sequence, name"
 
     name = fields.Char('Operation Name', required=True)
     company_id = fields.Many2one(
         'res.company', 'Company',
         default=lambda self: self.env['res.company']._company_default_get('procurement.order'), index=True)
-    route_id = fields.Many2one('stock.location.route', 'Route')
+    route_id = fields.Many2one('stock.location.route', 'Route', required=True, ondelete='cascade')
     location_from_id = fields.Many2one(
         'stock.location', 'Source Location', index=True, ondelete='cascade', required=True,
         help="This rule can be applied when a move is confirmed that has this location as destination location")
@@ -180,8 +187,8 @@ class PushedFlow(models.Model):
         help="The new location where the goods need to go")
     delay = fields.Integer('Delay (days)', default=0, help="Number of days needed to transfer the goods")
     picking_type_id = fields.Many2one(
-        'stock.picking.type', 'Picking Type', required=True,
-        help="This is the picking type that will be put on the stock moves")
+        'stock.picking.type', 'Operation Type', required=True,
+        help="This is the operation type that will be put on the stock moves")
     auto = fields.Selection([
         ('manual', 'Manual Operation'),
         ('transparent', 'Automatic No Step Added')], string='Automatic Move',

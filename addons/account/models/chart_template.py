@@ -319,10 +319,11 @@ class AccountChartTemplate(models.Model):
         # writing account values after creation of accounts
         company.transfer_account_id = account_template_ref[transfer_account_id.id]
         for key, value in generated_tax_res['account_dict'].items():
-            if value['refund_account_id'] or value['account_id']:
+            if value['refund_account_id'] or value['account_id'] or value['cash_basis_account']:
                 AccountTaxObj.browse(key).write({
                     'refund_account_id': account_ref.get(value['refund_account_id'], False),
                     'account_id': account_ref.get(value['account_id'], False),
+                    'cash_basis_account': account_ref.get(value['cash_basis_account'], False),
                 })
 
         # Create Journals - Only done for root chart template
@@ -350,6 +351,26 @@ class AccountChartTemplate(models.Model):
         new_xml_id = str(company.id)+'_'+template_xmlid.name
         return ir_model_data._update(model, template_xmlid.module, vals, xml_id=new_xml_id, store=True, noupdate=True, mode='init', res_id=False)
 
+    def _get_account_vals(self, company, account_template, code_acc, tax_template_ref):
+        """ This method generates a dictionnary of all the values for the account that will be created.
+        """
+        self.ensure_one()
+        tax_ids = []
+        for tax in account_template.tax_ids:
+            tax_ids.append(tax_template_ref[tax.id])
+        val = {
+                'name': account_template.name,
+                'currency_id': account_template.currency_id and account_template.currency_id.id or False,
+                'code': code_acc,
+                'user_type_id': account_template.user_type_id and account_template.user_type_id.id or False,
+                'reconcile': account_template.reconcile,
+                'note': account_template.note,
+                'tax_ids': [(6, 0, tax_ids)],
+                'company_id': company.id,
+                'tag_ids': [(6, 0, [t.id for t in account_template.tag_ids])],
+            }
+        return val
+
     @api.multi
     def generate_account(self, tax_template_ref, acc_template_ref, code_digits, company):
         """ This method for generating accounts from templates.
@@ -365,28 +386,35 @@ class AccountChartTemplate(models.Model):
         account_tmpl_obj = self.env['account.account.template']
         acc_template = account_tmpl_obj.search([('nocreate', '!=', True), ('chart_template_id', '=', self.id)], order='id')
         for account_template in acc_template:
-            tax_ids = []
-            for tax in account_template.tax_ids:
-                tax_ids.append(tax_template_ref[tax.id])
-
             code_main = account_template.code and len(account_template.code) or 0
             code_acc = account_template.code or ''
             if code_main > 0 and code_main <= code_digits:
                 code_acc = str(code_acc) + (str('0'*(code_digits-code_main)))
-            vals = {
-                'name': account_template.name,
-                'currency_id': account_template.currency_id and account_template.currency_id.id or False,
-                'code': code_acc,
-                'user_type_id': account_template.user_type_id and account_template.user_type_id.id or False,
-                'reconcile': account_template.reconcile,
-                'note': account_template.note,
-                'tax_ids': [(6, 0, tax_ids)],
-                'company_id': company.id,
-                'tag_ids': [(6, 0, [t.id for t in account_template.tag_ids])],
-            }
+            vals = self._get_account_vals(company, account_template, code_acc, tax_template_ref)
             new_account = self.create_record_with_xmlid(company, account_template, 'account.account', vals)
             acc_template_ref[account_template.id] = new_account
         return acc_template_ref
+
+    def _prepare_reconcile_model_vals(self, company, account_reconcile_model, acc_template_ref, tax_template_ref):
+        """ This method generates a dictionnary of all the values for the account.reconcile.model that will be created.
+        """
+        self.ensure_one()
+        return {
+                'name': account_reconcile_model.name,
+                'sequence': account_reconcile_model.sequence,
+                'has_second_line': account_reconcile_model.has_second_line,
+                'company_id': company.id,
+                'account_id': acc_template_ref[account_reconcile_model.account_id.id],
+                'label': account_reconcile_model.label,
+                'amount_type': account_reconcile_model.amount_type,
+                'amount': account_reconcile_model.amount,
+                'tax_id': account_reconcile_model.tax_id and tax_template_ref[account_reconcile_model.tax_id.id] or False,
+                'second_account_id': account_reconcile_model.second_account_id and acc_template_ref[account_reconcile_model.second_account_id.id] or False,
+                'second_label': account_reconcile_model.second_label,
+                'second_amount_type': account_reconcile_model.second_amount_type,
+                'second_amount': account_reconcile_model.second_amount,
+                'second_tax_id': account_reconcile_model.second_tax_id and tax_template_ref[account_reconcile_model.second_tax_id.id] or False,
+            }
 
     @api.multi
     def generate_account_reconcile_model(self, tax_template_ref, acc_template_ref, company):
@@ -403,22 +431,7 @@ class AccountChartTemplate(models.Model):
             ('account_id.chart_template_id', '=', self.id)
         ])
         for account_reconcile_model in account_reconcile_models:
-            vals = {
-                'name': account_reconcile_model.name,
-                'sequence': account_reconcile_model.sequence,
-                'has_second_line': account_reconcile_model.has_second_line,
-                'company_id': company.id,
-                'account_id': acc_template_ref[account_reconcile_model.account_id.id],
-                'label': account_reconcile_model.label,
-                'amount_type': account_reconcile_model.amount_type,
-                'amount': account_reconcile_model.amount,
-                'tax_id': account_reconcile_model.tax_id and tax_template_ref[account_reconcile_model.tax_id.id] or False,
-                'second_account_id': account_reconcile_model.second_account_id and acc_template_ref[account_reconcile_model.second_account_id.id] or False,
-                'second_label': account_reconcile_model.second_label,
-                'second_amount_type': account_reconcile_model.second_amount_type,
-                'second_amount': account_reconcile_model.second_amount,
-                'second_tax_id': account_reconcile_model.second_tax_id and tax_template_ref[account_reconcile_model.second_tax_id.id] or False,
-            }
+            vals = self._prepare_reconcile_model_vals(company, account_reconcile_model, acc_template_ref, tax_template_ref)
             self.create_record_with_xmlid(company, account_reconcile_model, 'account.reconcile.model', vals)
         return True
 
@@ -461,6 +474,7 @@ class AccountTaxTemplate(models.Model):
     name = fields.Char(string='Tax Name', required=True)
     type_tax_use = fields.Selection([('sale', 'Sales'), ('purchase', 'Purchases'), ('none', 'None')], string='Tax Scope', required=True, default="sale",
         help="Determines where the tax is selectable. Note : 'None' means a tax can't be used by itself, however it can still be used in a group.")
+    tax_adjustment = fields.Boolean(default=False)
     amount_type = fields.Selection(default='percent', string="Tax Computation", required=True,
         selection=[('group', 'Group of Taxes'), ('fixed', 'Fixed'), ('percent', 'Percentage of Price'), ('division', 'Percentage of Price Tax Included')])
     active = fields.Boolean(default=True, help="Set active to false to hide the tax without removing it.")
@@ -481,7 +495,15 @@ class AccountTaxTemplate(models.Model):
     analytic = fields.Boolean(string="Analytic Cost", help="If set, the amount computed by this tax will be assigned to the same analytic account as the invoice line (if any)")
     tag_ids = fields.Many2many('account.account.tag', string='Account tag', help="Optional tags you may want to assign for custom reporting")
     tax_group_id = fields.Many2one('account.tax.group', string="Tax Group")
-    tax_adjustment = fields.Boolean(default=False)
+    use_cash_basis = fields.Boolean(
+        'Use Cash Basis',
+        help="Select this if the tax should use cash basis,"
+        "which will create an entry for this tax on a given account during reconciliation")
+    cash_basis_account = fields.Many2one(
+        'account.account.template',
+        string='Tax Received Account',
+        domain=[('deprecated', '=', False)],
+        help='Account use when creating entry for tax cash basis')
 
     _sql_constraints = [
         ('name_company_uniq', 'unique(name, company_id, type_tax_use)', 'Tax names must be unique !'),
@@ -496,9 +518,14 @@ class AccountTaxTemplate(models.Model):
             res.append((record.id, name))
         return res
 
-    def _get_tax_vals(self, company):
+    def _get_tax_vals(self, company, tax_template_to_tax):
         """ This method generates a dictionnary of all the values for the tax that will be created.
         """
+        # Compute children tax ids
+        children_ids = []
+        for child_tax in self.children_tax_ids:
+            if tax_template_to_tax.get(child_tax.id):
+                children_ids.append(tax_template_to_tax[child_tax.id])
         self.ensure_one()
         val = {
             'name': self.name,
@@ -513,8 +540,11 @@ class AccountTaxTemplate(models.Model):
             'include_base_amount': self.include_base_amount,
             'analytic': self.analytic,
             'tag_ids': [(6, 0, [t.id for t in self.tag_ids])],
+            'children_tax_ids': [(6, 0, children_ids)],
             'tax_adjustment': self.tax_adjustment,
+            'use_cash_basis': self.use_cash_basis,
         }
+
         if self.tax_group_id:
             val['tax_group_id'] = self.tax_group_id.id
         return val
@@ -532,26 +562,20 @@ class AccountTaxTemplate(models.Model):
         todo_dict = {}
         tax_template_to_tax = {}
         for tax in self:
-            # Compute children tax ids
-            children_ids = []
-            for child_tax in tax.children_tax_ids:
-                if tax_template_to_tax.get(child_tax.id):
-                    children_ids.append(tax_template_to_tax[child_tax.id])
-            vals_tax = tax._get_tax_vals(company)
-            vals_tax['children_tax_ids'] = children_ids and [(6, 0, children_ids)] or []
+            vals_tax = tax._get_tax_vals(company, tax_template_to_tax)
             new_tax = self.env['account.chart.template'].create_record_with_xmlid(company, tax, 'account.tax', vals_tax)
             tax_template_to_tax[tax.id] = new_tax
             # Since the accounts have not been created yet, we have to wait before filling these fields
             todo_dict[new_tax] = {
                 'account_id': tax.account_id.id,
                 'refund_account_id': tax.refund_account_id.id,
+                'cash_basis_account': tax.cash_basis_account.id,
             }
 
         return {
             'tax_template_to_tax': tax_template_to_tax,
             'account_dict': todo_dict
         }
-
 
 # Fiscal Position Templates
 
@@ -677,6 +701,10 @@ class WizardMultiChartsAccounts(models.TransientModel):
         return res
 
     @api.model
+    def _get_default_bank_account_ids(self):
+        return [{'acc_name': _('Cash'), 'account_type': 'cash'}, {'acc_name': _('Bank'), 'account_type': 'bank'}]
+
+    @api.model
     def default_get(self, fields):
         context = self._context or {}
         res = super(WizardMultiChartsAccounts, self).default_get(fields)
@@ -684,7 +712,7 @@ class WizardMultiChartsAccounts(models.TransientModel):
         account_chart_template = self.env['account.chart.template']
 
         if 'bank_account_ids' in fields:
-            res.update({'bank_account_ids': [{'acc_name': _('Cash'), 'account_type': 'cash'}, {'acc_name': _('Bank'), 'account_type': 'bank'}]})
+            res.update({'bank_account_ids': self._get_default_bank_account_ids()})
         if 'company_id' in fields:
             res.update({'company_id': self.env.user.company_id.id})
         if 'currency_id' in fields:
@@ -813,12 +841,15 @@ class WizardMultiChartsAccounts(models.TransientModel):
         # Create Bank journals
         self._create_bank_journals_from_o2m(company, acc_template_ref)
 
-        # Create the current year earning account (outside of the CoA)
-        self.env['account.account'].create({
-            'code': '999999',
-            'name': _('Undistributed Profits/Losses'),
-            'user_type_id': self.env.ref("account.data_unaffected_earnings").id,
-            'company_id': company.id,})
+        # Create the current year earning account if it wasn't present in the CoA
+        account_obj = self.env['account.account']
+        unaffected_earnings_xml = self.env.ref("account.data_unaffected_earnings")
+        if unaffected_earnings_xml and not account_obj.search([('company_id', '=', company.id), ('user_type_id', '=', unaffected_earnings_xml.id)]):
+            account_obj.create({
+                'code': '999999',
+                'name': _('Undistributed Profits/Losses'),
+                'user_type_id': unaffected_earnings_xml.id,
+                'company_id': company.id,})
         return {}
 
     @api.multi

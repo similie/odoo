@@ -130,7 +130,7 @@ var MentionManager = Widget.extend({
     get_listener_selection: function (delimiter) {
         var listener = _.findWhere(this.listeners, {delimiter: delimiter});
         if (listener) {
-            var input_mentions = this.composer.$input.val().match(new RegExp(delimiter+'[^ ]+', 'g'));
+            var input_mentions = this.composer.$input.val().match(new RegExp(delimiter+'[^ ]+(?= |&nbsp;)', 'g'));
             return this._validate_selection(listener.selection, input_mentions);
         }
         return [];
@@ -270,7 +270,7 @@ var MentionManager = Widget.extend({
         // create the regex of all mention's names
         var names = _.pluck(listener.selection, 'name');
         var escaped_names = _.map(names, function (str) {
-            return "("+_.str.escapeRegExp(listener.delimiter+str)+")";
+            return "("+_.str.escapeRegExp(listener.delimiter+str)+")(?= |&nbsp;)";
         });
         var regex_str = escaped_names.join('|');
         // extract matches
@@ -474,6 +474,8 @@ var BasicComposer = Widget.extend({
         // Return a deferred as this function is extended with asynchronous
         // behavior for the chatter composer
         var value = _.escape(this.$input.val()).replace(/\n|\r/g, '<br/>');
+        // prevent html space collapsing
+        value = value.replace(/ /g, '&nbsp;').replace(/([^>])&nbsp;([^<])/g, '$1 $2');
         var commands = this.options.commands_enabled ? this.mention_manager.get_listener_selection('/') : [];
         return $.when({
             content: this.mention_manager.generate_links(value),
@@ -488,17 +490,24 @@ var BasicComposer = Widget.extend({
             return;
         }
 
+        clearTimeout(this.canned_timeout);
         var self = this;
         this.preprocess_message().then(function (message) {
             self.trigger('post_message', message);
-
-            // Empty input, selected partners and attachments
-            self.$input.val('');
-            self.mention_manager.reset_selections();
-            self.set('attachment_ids', []);
-
+            self.clear_composer_on_send();
             self.$input.focus();
         });
+    },
+
+    clear_composer: function() {
+        // Empty input, selected partners and attachments
+        this.$input.val('');
+        this.mention_manager.reset_selections();
+        this.set('attachment_ids', []);
+    },
+
+    clear_composer_on_send: function() {
+        this.clear_composer();
     },
 
     // Events
@@ -571,57 +580,58 @@ var BasicComposer = Widget.extend({
 
     // Attachments
     on_attachment_change: function(event) {
-        var $target = $(event.target);
-        if ($target.val() !== '') {
-            var filename = $target.val().replace(/.*[\\\/]/,'');
-            // if the files exits for this answer, delete the file before upload
-            var attachments = [];
-            for (var i in this.get('attachment_ids')) {
-                if ((this.get('attachment_ids')[i].filename || this.get('attachment_ids')[i].name) === filename) {
-                    if (this.get('attachment_ids')[i].upload) {
-                        return false;
-                    }
-                    this.AttachmentDataSet.unlink([this.get('attachment_ids')[i].id]);
-                } else {
-                    attachments.push(this.get('attachment_ids')[i]);
-                }
-            }
-            // submit filename
-            this.$('form.o_form_binary_form').submit();
-            this.$attachment_button.prop('disabled', true);
+        var self = this,
+            files = event.target.files,
+            attachments = self.get('attachment_ids');
 
-            attachments.push({
+        _.each(files, function(file){
+            var attachment = _.findWhere(attachments, {name: file.name});
+            // if the files already exits, delete the file before upload
+            if(attachment){
+                self.AttachmentDataSet.unlink([attachment.id]);
+                attachments = _.without(attachments, attachment);
+            }
+        });
+
+        this.$('form.o_form_binary_form').submit();
+        this.$attachment_button.prop('disabled', true);
+        var upload_attachments = _.map(files, function(file){
+            return {
                 'id': 0,
-                'name': filename,
-                'filename': filename,
+                'name': file.name,
+                'filename': file.name,
                 'url': '',
                 'upload': true,
                 'mimetype': '',
-            });
-            this.set('attachment_ids', attachments);
-        }
+            };
+        });
+        attachments = attachments.concat(upload_attachments);
+        this.set('attachment_ids', attachments);
     },
-    on_attachment_loaded: function(event, result) {
-        var attachment_ids = [];
-        if (result.error || !result.id ) {
-            this.do_warn(result.error);
-            attachment_ids = _.filter(this.get('attachment_ids'), function (val) { return !val.upload; });
-        } else {
-            _.each(this.get('attachment_ids'), function(a) {
-                if (a.filename === result.filename && a.upload) {
-                    attachment_ids.push({
-                        'id': result.id,
-                        'name': result.name || result.filename,
-                        'filename': result.filename,
-                        'mimetype': result.mimetype,
-                        'url': session.url('/web/content', {'id': result.id, download: true}),
+    on_attachment_loaded: function(event) {
+        var self = this,
+            attachments = this.get('attachment_ids'),
+            files = Array.prototype.slice.call(arguments, 1);
+
+        _.each(files, function(file){
+            if(file.error || !file.id){
+                this.do_warn(file.error);
+                attachments = _.filter(attachments, function (attachment) { return !attachment.upload; });
+            }else{
+                var attachment = _.findWhere(attachments, {filename: file.filename, upload: true});
+                if(attachment){
+                    attachments = _.without(attachments, attachment);
+                    attachments.push({
+                        'id': file.id,
+                        'name': file.name || file.filename,
+                        'filename': file.filename,
+                        'mimetype': file.mimetype,
+                        'url': session.url('/web/content', {'id': file.id, download: true}),
                     });
-                } else {
-                    attachment_ids.push(a);
                 }
-            });
-        }
-        this.set('attachment_ids', attachment_ids);
+            }
+        }.bind(this));
+        this.set('attachment_ids', attachments);
         this.$attachment_button.prop('disabled', false);
     },
     on_attachment_delete: function(event){
@@ -705,12 +715,18 @@ var BasicComposer = Widget.extend({
         });
     },
     mention_get_canned_responses: function (search) {
-        var canned_responses = chat_manager.get_canned_responses();
-        var matches = fuzzy.filter(utils.unaccent(search), _.pluck(canned_responses, 'source'));
-        var indexes = _.pluck(matches.slice(0, this.options.mention_fetch_limit), 'index');
-        return _.map(indexes, function (i) {
-            return canned_responses[i];
-        });
+        var self = this;
+        var def = $.Deferred();
+        clearTimeout(this.canned_timeout);
+        this.canned_timeout = setTimeout(function() {
+            var canned_responses = chat_manager.get_canned_responses();
+            var matches = fuzzy.filter(utils.unaccent(search), _.pluck(canned_responses, 'source'));
+            var indexes = _.pluck(matches.slice(0, self.options.mention_fetch_limit), 'index');
+            def.resolve(_.map(indexes, function (i) {
+                return canned_responses[i];
+            }));
+        }, 500);
+        return def;
     },
     mention_get_commands: function (search) {
         var search_regexp = new RegExp(_.str.escapeRegExp(utils.unaccent(search)), 'i');

@@ -19,8 +19,7 @@ import odoo.modules.registry
 import odoo.tools as tools
 
 from odoo import api, SUPERUSER_ID
-from odoo.modules.module import adapt_version, initialize_sys_path, \
-                                load_openerp_module, runs_post_install
+from odoo.modules.module import adapt_version, initialize_sys_path, load_openerp_module
 
 _logger = logging.getLogger(__name__)
 _test_logger = logging.getLogger('odoo.tests')
@@ -191,6 +190,8 @@ def load_module_graph(cr, graph, status=None, perform_checks=True, skip_modules=
             # Set new modules and dependencies
             module.write({'state': 'installed', 'latest_version': ver})
 
+            package.load_state = package.state
+            package.load_version = package.installed_version
             package.state = 'installed'
             for kind in ('init', 'demo', 'update'):
                 if hasattr(package, kind):
@@ -338,6 +339,11 @@ def load_modules(db, force_demo=False, status=None, update_module=False):
 
         registry.setup_models(cr)
 
+        # STEP 3.5: execute migration end-scripts
+        migrations = odoo.modules.migration.MigrationManager(cr, graph)
+        for package in graph:
+            migrations.migrate_module(package, 'end')
+
         # STEP 4: Finish and cleanup installations
         if processed_modules:
             cr.execute("""select model,name from ir_model where id NOT IN (select distinct model_id from ir_model_access)""")
@@ -357,7 +363,7 @@ def load_modules(db, force_demo=False, status=None, update_module=False):
             for (model,) in cr.fetchall():
                 if model in registry:
                     env[model]._check_removed_columns(log=True)
-                else:
+                elif _logger.isEnabledFor(logging.INFO):    # more an info that a warning...
                     _logger.warning("Model %s is declared but cannot be loaded! (Perhaps a module was partially removed or renamed)", model)
 
             # Cleanup orphan records
@@ -394,12 +400,11 @@ def load_modules(db, force_demo=False, status=None, update_module=False):
         # STEP 6: verify custom views on every model
         if update_module:
             View = env['ir.ui.view']
-            custom_view_test = True
             for model in registry:
-                if not View._validate_custom_views(model):
-                    custom_view_test = False
-                    _logger.error('invalid custom view(s) for model %s', model)
-            report.record_result(custom_view_test)
+                try:
+                    View._validate_custom_views(model)
+                except Exception as e:
+                    _logger.warning('invalid custom view(s) for model %s: %s', model, tools.ustr(e))
 
         if report.failures:
             _logger.error('At least one test failed when loading the modules.')
@@ -410,18 +415,9 @@ def load_modules(db, force_demo=False, status=None, update_module=False):
         for model in env.values():
             model._register_hook()
 
-        # STEP 9: Run the post-install tests
+        # STEP 9: save installed/updated modules for post-install tests
+        registry.updated_modules += processed_modules
         cr.commit()
 
-        t0 = time.time()
-        t0_sql = odoo.sql_db.sql_counter
-        if odoo.tools.config['test_enable']:
-            if update_module:
-                cr.execute("SELECT name FROM ir_module_module WHERE state='installed' and name = ANY(%s)", (processed_modules,))
-            else:
-                cr.execute("SELECT name FROM ir_module_module WHERE state='installed'")
-            for module_name in cr.fetchall():
-                report.record_result(odoo.modules.module.run_unit_tests(module_name[0], cr.dbname, position=runs_post_install))
-            _logger.log(25, "All post-tested in %.2fs, %s queries", time.time() - t0, odoo.sql_db.sql_counter - t0_sql)
     finally:
         cr.close()

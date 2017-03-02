@@ -65,9 +65,13 @@ def is_calendar_id(record_id):
 class Contacts(models.Model):
     _name = 'calendar.contacts'
 
-    user_id = fields.Many2one('res.users', 'Me', default=lambda self: self.env.user)
+    user_id = fields.Many2one('res.users', 'Me', required=True, default=lambda self: self.env.user)
     partner_id = fields.Many2one('res.partner', 'Employee', required=True)
     active = fields.Boolean('Active', default=True)
+
+    _sql_constraints = [
+        ('user_id_partner_id_unique', 'UNIQUE(user_id,partner_id)', 'An user cannot have twice the same contact.')
+    ]
 
     @api.model
     def unlink_from_partner_id(self, partner_id):
@@ -131,7 +135,7 @@ class Attendee(models.Model):
         """
         res = False
 
-        if self.env['ir.config_parameter'].get_param('calendar.block_mail') or self._context.get("no_mail_to_attendees"):
+        if self.env['ir.config_parameter'].sudo().get_param('calendar.block_mail') or self._context.get("no_mail_to_attendees"):
             return res
 
         calendar_view = self.env.ref('calendar.view_calendar_event_calendar')
@@ -152,7 +156,7 @@ class Attendee(models.Model):
             'color': colors,
             'action_id': self.env['ir.actions.act_window'].search([('view_id', '=', calendar_view.id)], limit=1).id,
             'dbname': self._cr.dbname,
-            'base_url': self.env['ir.config_parameter'].get_param('web.base.url', default='http://localhost:8069')
+            'base_url': self.env['ir.config_parameter'].sudo().get_param('web.base.url', default='http://localhost:8069')
         })
         invitation_template = invitation_template.with_context(rendering_context)
 
@@ -169,6 +173,7 @@ class Attendee(models.Model):
                                                       'datas_fname': 'invitation.ics',
                                                       'datas': str(ics_file).encode('base64')})]
                 vals['model'] = None  # We don't want to have the mail in the tchatter while in queue!
+                vals['res_id'] = False
                 current_mail = self.env['mail.mail'].browse(mail_id)
                 current_mail.mail_message_id.write(vals)
                 mails_to_send |= current_mail
@@ -509,7 +514,7 @@ class Meeting(models.Model):
     _name = 'calendar.event'
     _description = "Event"
     _order = "id desc"
-    _inherit = ["mail.thread", "ir.needaction_mixin"]
+    _inherit = ["mail.thread"]
 
     @api.model
     def _default_partners(self):
@@ -552,15 +557,15 @@ class Meeting(models.Model):
     def _get_recurrency_end_date(self):
         """ Return the last date a recurring event happens, according to its end_type. """
         self.ensure_one()
-        data = self.read(['final_date', 'recurrency', 'rrule_type', 'count', 'end_type', 'stop'])[0]
+        data = self.read(['final_date', 'recurrency', 'rrule_type', 'count', 'end_type', 'stop', 'interval'])[0]
 
         if not data.get('recurrency'):
             return False
 
         end_type = data.get('end_type')
         final_date = data.get('final_date')
-        if end_type == 'count' and all(data.get(key) for key in ['count', 'rrule_type', 'stop']):
-            count = data['count'] + 1
+        if end_type == 'count' and all(data.get(key) for key in ['count', 'rrule_type', 'stop', 'interval']):
+            count = (data['count'] + 1) * data['interval']
             delay, mult = {
                 'daily': ('days', 1),
                 'weekly': ('days', 7),
@@ -1079,7 +1084,7 @@ class Meeting(models.Model):
                 if self.month_by == 'date' and (self.day < 1 or self.day > 31):
                     raise UserError(_("Please select a proper day of the month."))
 
-                if self.month_by == 'day':  # Eg : Second Monday of the month
+                if self.month_by == 'day' and self.byday and self.week_list:  # Eg : Second Monday of the month
                     return ';BYDAY=' + self.byday + self.week_list
                 elif self.month_by == 'date':  # Eg : 16th of the month
                     return ';BYMONTHDAY=' + str(self.day)
@@ -1142,7 +1147,7 @@ class Meeting(models.Model):
             data['rrule_type'] = 'monthly'
 
         if rule._bymonthday:
-            data['day'] = rule._bymonthday[0]
+            data['day'] = list(rule._bymonthday)[0]
             data['month_by'] = 'date'
             data['rrule_type'] = 'monthly'
 
@@ -1256,15 +1261,6 @@ class Meeting(models.Model):
     # Messaging
     ####################################################
 
-    # shows events of the day for this user
-    @api.model
-    def _needaction_domain_get(self):
-        return [
-            ('stop', '<=', time.strftime(DEFAULT_SERVER_DATE_FORMAT + ' 23:59:59')),
-            ('start', '>=', time.strftime(DEFAULT_SERVER_DATE_FORMAT + ' 00:00:00')),
-            ('user_id', '=', self.env.user.id),
-        ]
-
     @api.multi
     def _get_message_unread(self):
         id_map = {x: calendar_id2real_id(x) for x in self.ids}
@@ -1365,11 +1361,11 @@ class Meeting(models.Model):
             super(Meeting, real_meetings).write(values)
 
             # set end_date for calendar searching
-            if values.get('recurrency') and values.get('end_type', 'count') in ('count', unicode('count')) and \
-                    (values.get('rrule_type') or values.get('count') or values.get('start') or values.get('stop')):
+            if any(field in values for field in ['recurrency', 'end_type', 'count', 'rrule_type', 'start', 'stop']):
                 for real_meeting in real_meetings:
-                    final_date = real_meeting._get_recurrency_end_date()
-                    super(Meeting, real_meeting).write({'final_date': final_date})
+                    if real_meeting.recurrency and real_meeting.end_type in ('count', unicode('count')):
+                        final_date = real_meeting._get_recurrency_end_date()
+                        super(Meeting, real_meeting).write({'final_date': final_date})
 
             attendees_create = False
             if values.get('partner_ids', False):
@@ -1469,7 +1465,8 @@ class Meeting(models.Model):
         for r in result:
             if r['user_id']:
                 user_id = type(r['user_id']) in (tuple, list) and r['user_id'][0] or r['user_id']
-                if user_id == self.env.user.id:
+                partner_id = self.env.user.partner_id.id
+                if user_id == self.env.user.id or partner_id in r.get("partner_ids", []):
                     continue
             if r['privacy'] == 'private':
                 for f in r.keys():

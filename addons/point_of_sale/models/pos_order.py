@@ -17,7 +17,7 @@ _logger = logging.getLogger(__name__)
 
 class PosOrder(models.Model):
     _name = "pos.order"
-    _description = "Point of Sale"
+    _description = "Point of Sale Orders"
     _order = "id desc"
 
     @api.model
@@ -31,7 +31,7 @@ class PosOrder(models.Model):
 
     @api.model
     def _order_fields(self, ui_order):
-        process_line = partial(self.env['pos.order.line']._order_line_fields)
+        process_line = partial(self.env['pos.order.line']._order_line_fields, session_id=ui_order['pos_session_id'])
         return {
             'name':         ui_order['name'],
             'user_id':      ui_order['user_id'] or False,
@@ -53,36 +53,29 @@ class PosOrder(models.Model):
         }
 
     # This deals with orders that belong to a closed session. In order
-    # to recover from this we:
-    # - assign the order to another compatible open session
-    # - if that doesn't exist, create a new one
+    # to recover from this situation we create a new rescue session,
+    # making it obvious that something went wrong.
+    # A new, separate, rescue session is preferred for every such recovery,
+    # to avoid adding unrelated orders to live sessions.
     def _get_valid_session(self, order):
         PosSession = self.env['pos.session']
         closed_session = PosSession.browse(order['pos_session_id'])
-        open_session = PosSession.search(
-            [('state', '=', 'opened'),
-             ('config_id', '=', closed_session.config_id.id),
-             ('user_id', '=', closed_session.user_id.id)],
-            limit=1, order="start_at DESC")
 
         _logger.warning('session %s (ID: %s) was closed but received order %s (total: %s) belonging to it',
                         closed_session.name,
                         closed_session.id,
                         order['name'],
                         order['amount_total'])
+        _logger.warning('attempting to create recovery session for saving order %s', order['name'])
+        new_session = PosSession.create({
+            'config_id': closed_session.config_id.id,
+            'name': _('(RESCUE FOR %(session)s)') % {'session': closed_session.name},
+            'rescue': True,    # avoid conflict with live sessions
+        })
+        # bypass opening_control (necessary when using cash control)
+        new_session.action_pos_session_open()
 
-        if open_session:
-            _logger.warning('using session %s (ID: %s) for order %s instead',
-                            open_session.name,
-                            open_session.id,
-                            order['name'])
-            return open_session
-        else:
-            _logger.warning('attempting to create new session for order %s', order['name'])
-            new_session = PosSession.create({'config_id': closed_session.config_id.id})
-            # bypass opening_control (necessary when using cash control)
-            new_session.action_pos_session_open()
-            return new_session
+        return new_session
 
     def _match_payment_to_invoice(self, order):
         account_precision = self.env['decimal.precision'].precision_get('Account')
@@ -205,6 +198,7 @@ class PosOrder(models.Model):
 
         grouped_data = {}
         have_to_group_by = session and session.config_id.group_by or False
+        rounding_method = session and session.config_id.company_id.tax_calculation_rounding_method
 
         for order in self.filtered(lambda o: not o.account_move or order.state == 'paid'):
             current_company = order.sale_journal.company_id
@@ -303,6 +297,14 @@ class PosOrder(models.Model):
                         'partner_id': partner_id
                     })
 
+            # round tax lines per order
+            if rounding_method == 'round_globally':
+                for group_key, group_value in grouped_data.iteritems():
+                    if group_key[0] == 'tax':
+                        for line in group_value:
+                            line['credit'] = cur.round(line['credit'])
+                            line['debit'] = cur.round(line['debit'])
+
             # counterpart
             insert_data('counter_part', {
                 'name': _("Trade Receivables"),  # order.name,
@@ -322,6 +324,19 @@ class PosOrder(models.Model):
             move.sudo().write({'line_ids': all_lines})
             move.sudo().post()
         return True
+
+    def _reconcile_payments(self):
+        for order in self:
+            aml = order.statement_ids.mapped('journal_entry_ids') | order.account_move.line_ids
+            aml = aml.filtered(lambda r: not r.reconciled and r.account_id.internal_type == 'receivable' and r.partner_id == order.partner_id)
+            try:
+                aml.reconcile()
+            except:
+                # There might be unexpected situations where the automatic reconciliation won't
+                # work. We don't want the user to be blocked because of this, since the automatic
+                # reconciliation is introduced for convenience, not for mandatory accounting
+                # reasons.
+                continue
 
     def _default_session(self):
         return self.env['pos.session'].search([('state', '=', 'opened'), ('user_id', '=', self.env.uid)], limit=1)
@@ -356,12 +371,12 @@ class PosOrder(models.Model):
     invoice_id = fields.Many2one('account.invoice', string='Invoice', copy=False)
     account_move = fields.Many2one('account.move', string='Journal Entry', readonly=True, copy=False)
     picking_id = fields.Many2one('stock.picking', string='Picking', readonly=True, copy=False)
-    picking_type_id = fields.Many2one('stock.picking.type', related='session_id.config_id.picking_type_id', string="Picking Type")
+    picking_type_id = fields.Many2one('stock.picking.type', related='session_id.config_id.picking_type_id', string="Operation Type")
     location_id = fields.Many2one('stock.location', related='session_id.config_id.stock_location_id', string="Location", store=True)
     note = fields.Text(string='Internal Notes')
     nb_print = fields.Integer(string='Number of Print', readonly=True, copy=False, default=0)
     pos_reference = fields.Char(string='Receipt Ref', readonly=True, copy=False)
-    sale_journal = fields.Many2one('account.journal', related='session_id.config_id.journal_id', string='Sale Journal', store=True, readonly=True)
+    sale_journal = fields.Many2one('account.journal', related='session_id.config_id.journal_id', string='Sales Journal', store=True, readonly=True)
     fiscal_position_id = fields.Many2one('account.fiscal.position', string='Fiscal Position', default=lambda self: self._default_session().config_id.default_fiscal_position_id)
 
     @api.depends('statement_ids', 'lines.price_subtotal_incl', 'lines.discount')
@@ -408,7 +423,7 @@ class PosOrder(models.Model):
             # set name based on the sequence specified on the config
             session = self.env['pos.session'].browse(values['session_id'])
             values['name'] = session.config_id.sequence_id._next()
-            values.setdefault('session_id', session.config_id.pricelist_id.id)
+            values.setdefault('pricelist_id', session.config_id.pricelist_id.id)
         else:
             # fallback on any pos.order sequence
             values['name'] = self.env['ir.sequence'].next_by_code('pos.order')
@@ -463,9 +478,6 @@ class PosOrder(models.Model):
 
             new_invoice.with_context(local_context).sudo().compute_taxes()
             order.sudo().write({'state': 'invoiced'})
-            # this workflow signal didn't exist on account.invoice -> should it have been 'invoice_open' ? (and now method .action_invoice_open())
-            # shouldn't the created invoice be marked as paid, seing the customer paid in the POS?
-            # new_invoice.sudo().signal_workflow('validate')
 
         if not Invoice:
             return {}
@@ -521,6 +533,7 @@ class PosOrder(models.Model):
             if to_invoice:
                 pos_order.action_pos_order_invoice()
                 pos_order.invoice_id.sudo().action_invoice_open()
+                pos_order.account_move = pos_order.invoice_id.move_id
         return order_ids
 
     def test_paid(self):
@@ -712,12 +725,17 @@ class PosOrder(models.Model):
                 'session_id': current_session.id,
                 'date_order': fields.Datetime.now(),
                 'pos_reference': order.pos_reference,
+                'lines': False,
             })
+            for line in order.lines:
+                clone_line = line.copy({
+                    # required=True, copy=False
+                    'name': line.name + _(' REFUND'),
+                    'order_id': clone.id,
+                    'qty': -line.qty,
+                })
             PosOrder += clone
 
-        for clone in PosOrder:
-            for order_line in clone.lines:
-                order_line.write({'qty': -order_line.qty})
         return {
             'name': _('Return Products'),
             'view_type': 'form',
@@ -736,14 +754,23 @@ class PosOrderLine(models.Model):
     _description = "Lines of Point of Sale"
     _rec_name = "product_id"
 
-    def _order_line_fields(self, line):
+    def _order_line_fields(self, line, session_id=None):
+        if line and 'name' not in line[2]:
+            if session_id:
+                # set name based on the sequence specified on the config
+                session = self.env['pos.session'].browse(session_id)
+                line[2]['name'] = session.config_id.sequence_line_id._next()
+            else:
+                # fallback on any pos.order.line sequence
+                line[2]['name'] = self.env['ir.sequence'].next_by_code('pos.order.line')
+
         if line and 'tax_ids' not in line[2]:
             product = self.env['product.product'].browse(line[2]['product_id'])
             line[2]['tax_ids'] = [(6, 0, [x.id for x in product.taxes_id])]
         return line
 
     company_id = fields.Many2one('res.company', string='Company', required=True, default=lambda self: self.env.user.company_id)
-    name = fields.Char(string='Line No', required=True, copy=False, default=lambda self: self.env['ir.sequence'].next_by_code('pos.order.line'))
+    name = fields.Char(string='Line No', required=True, copy=False)
     notice = fields.Char(string='Discount Notice')
     product_id = fields.Many2one('product.product', string='Product', domain=[('sale_ok', '=', True)], required=True, change_default=True)
     price_unit = fields.Float(string='Unit Price', digits=0)
@@ -756,6 +783,31 @@ class PosOrderLine(models.Model):
     tax_ids = fields.Many2many('account.tax', string='Taxes', readonly=True)
     tax_ids_after_fiscal_position = fields.Many2many('account.tax', compute='_get_tax_ids_after_fiscal_position', string='Taxes')
     pack_lot_ids = fields.One2many('pos.pack.operation.lot', 'pos_order_line_id', string='Lot/serial Number')
+
+    @api.model
+    def create(self, values):
+        if values.get('order_id') and not values.get('name'):
+            # set name based on the sequence specified on the config
+            config_id = self.env['pos.order'].browse(values['order_id']).session_id.config_id.id
+            # HACK: sequence created in the same transaction as the config
+            # cf TODO master is pos.config create
+            # remove me saas-15
+            self.env.cr.execute("""
+                SELECT s.id
+                FROM ir_sequence s
+                JOIN pos_config c
+                  ON s.create_date=c.create_date
+                WHERE c.id = %s
+                  AND s.code = 'pos.order.line'
+                LIMIT 1
+                """, (config_id,))
+            sequence = self.env.cr.fetchone()
+            if sequence:
+                values['name'] = self.env['ir.sequence'].browse(sequence[0])._next()
+        if not values.get('name'):
+            # fallback on any pos.order sequence
+            values['name'] = self.env['ir.sequence'].next_by_code('pos.order.line')
+        return super(PosOrderLine, self).create(values)
 
     @api.depends('price_unit', 'tax_ids', 'qty', 'discount', 'product_id')
     def _compute_amount_line_all(self):
@@ -876,8 +928,9 @@ class ReportSaleDetails(models.AbstractModel):
                 if line.tax_ids_after_fiscal_position:
                     line_taxes = line.tax_ids_after_fiscal_position.compute_all(line.price_unit * (1-(line.discount or 0.0)/100.0), currency, line.qty, product=line.product_id, partner=line.order_id.partner_id or False)
                     for tax in line_taxes['taxes']:
-                        taxes.setdefault(tax['id'], {'name': tax['name'], 'total':0.0})
-                        taxes[tax['id']]['total'] += tax['amount']
+                        taxes.setdefault(tax['id'], {'name': tax['name'], 'tax_amount':0.0, 'base_amount':0.0})
+                        taxes[tax['id']]['tax_amount'] += tax['amount']
+                        taxes[tax['id']]['base_amount'] += line.price_subtotal
 
         st_line_ids = self.env["account.bank.statement.line"].search([('pos_statement_id', 'in', orders.ids)]).ids
         if st_line_ids:
@@ -913,9 +966,7 @@ class ReportSaleDetails(models.AbstractModel):
 
     @api.multi
     def render_html(self, docids, data=None):
-        company = request.env.user.company_id
-        date_start = self.env.context.get('date_start', False)
-        date_stop = self.env.context.get('date_stop', False)
-        data = dict(data or {}, date_start=date_start, date_stop=date_stop)
-        data.update(self.get_sale_details(date_start, date_stop, company))
+        data = dict(data or {})
+        configs = self.env['pos.config'].browse(data['config_ids'])
+        data.update(self.get_sale_details(data['date_start'], data['date_stop'], configs))
         return self.env['report'].render('point_of_sale.report_saledetails', data)

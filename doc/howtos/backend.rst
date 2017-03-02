@@ -54,7 +54,7 @@ Business objects
     by Odoo based on their configuration
 
 Data files
-    XML or CSV files declaring metadata (views or workflows), configuration
+    XML or CSV files declaring metadata (views or reports), configuration
     data (modules parameterization), demonstration data and more
 
 Web controllers
@@ -1230,90 +1230,6 @@ Kanban views define the structure of each card as a mix of form elements
 
         .. patch::
 
-Workflows
-=========
-
-Workflows are models associated to business objects describing their dynamics.
-Workflows are also used to track processes that evolve over time.
-
-.. exercise:: Almost a workflow
-
-    Add a ``state`` field to the *Session* model. It will be used to define
-    a workflow-ish.
-
-    A sesion can have three possible states: Draft (default), Confirmed and
-    Done.
-
-    In the session form, add a (read-only) field to
-    visualize the state, and buttons to change it. The valid transitions are:
-
-    * Draft -> Confirmed
-    * Confirmed -> Draft
-    * Confirmed -> Done
-    * Done -> Draft
-
-    .. only:: solutions
-
-        #. Add a new ``state`` field
-        #. Add state-transitioning methods, those can be called from view
-           buttons to change the record's state
-        #. And add the relevant buttons to the session's form view
-
-        .. patch::
-
-Workflows may be associated with any object in Odoo, and are entirely
-customizable. Workflows are used to structure and manage the lifecycles of
-business objects and documents, and define transitions, triggers, etc. with
-graphical tools. Workflows, activities (nodes or actions) and transitions
-(conditions) are declared as XML records, as usual. The tokens that navigate
-in workflows are called workitems.
-
-.. warning::
-
-    A workflow associated with a model is only created when the
-    model's records are created. Thus there is no workflow instance
-    associated with session instances created before the workflow's
-    definition
-
-.. exercise:: Workflow
-
-    Replace the ad-hoc *Session* workflow by a real workflow. Transform the
-    *Session* form view so its buttons call the workflow instead of the
-    model's methods.
-
-    .. only:: solutions
-
-        .. patch::
-
-        .. tip::
-
-            In order to check if instances of the workflow are correctly
-            created alongside sessions, go to :menuselection:`Settings -->
-            Technical --> Workflows --> Instances`
-
-
-
-.. exercise:: Automatic transitions
-
-    Automatically transition sessions from *Draft* to *Confirmed* when more
-    than half the session's seats are reserved.
-
-    .. only:: solutions
-
-        .. patch::
-
-.. exercise:: Server actions
-
-    Replace the Python methods for synchronizing session state by
-    server actions.
-
-    Both the workflow and the server actions could have been created entirely
-    from the UI.
-
-    .. only:: solutions
-
-        .. patch::
-
 Security
 ========
 
@@ -1345,7 +1261,7 @@ rights are usually created by a CSV file named after its model:
     access_idea_idea,idea.idea,model_idea_idea,base.group_user,1,1,1,0
     access_idea_vote,idea.vote,model_idea_vote,base.group_user,1,1,1,0
 
-.. exercise:: Add access control through the OpenERP interface
+.. exercise:: Add access control through the Odoo interface
 
     Create a new user "John Smith". Then create a group
     "OpenAcademy / Session Read" with read access to the *Session* model.
@@ -1852,9 +1768,9 @@ Examples can be easily adapted from XML-RPC to JSON-RPC.
 
     * https://github.com/akretion/ooor
     * https://github.com/syleam/openobject-library
-    * https://github.com/nicolas-van/odoo-client-lib
-    * https://pypi.python.org/pypi/oersted/
-    * https://github.com/abhishek-jaiswal/php-odoo-lib
+    * https://github.com/nicolas-van/openerp-client-lib
+    * http://pythonhosted.org/OdooRPC
+    * https://github.com/abhishek-jaiswal/php-openerp-lib
 
 .. [#autofields] it is possible to :attr:`disable the automatic creation of some
                  fields <odoo.models.Model._log_access>`

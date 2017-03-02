@@ -128,12 +128,12 @@ class StockMove(models.Model):
         help="Remaining Quantity in default UoM according to operations matched with this move")
     procurement_id = fields.Many2one('procurement.order', 'Procurement')
     group_id = fields.Many2one('procurement.group', 'Procurement Group', default=_default_group_id)
-    rule_id = fields.Many2one('procurement.rule', 'Procurement Rule', help='The procurement rule that created this stock move')
-    push_rule_id = fields.Many2one('stock.location.path', 'Push Rule', help='The push rule that created this stock move')
+    rule_id = fields.Many2one('procurement.rule', 'Procurement Rule', ondelete='restrict', help='The procurement rule that created this stock move')
+    push_rule_id = fields.Many2one('stock.location.path', 'Push Rule', ondelete='restrict', help='The push rule that created this stock move')
     propagate = fields.Boolean(
         'Propagate cancel and split', default=True,
         help='If checked, when this move is cancelled, cancel the linked move too')
-    picking_type_id = fields.Many2one('stock.picking.type', 'Picking Type')
+    picking_type_id = fields.Many2one('stock.picking.type', 'Operation Type')
     inventory_id = fields.Many2one('stock.inventory', 'Inventory')
     lot_ids = fields.Many2many('stock.production.lot', string='Lots/Serial Numbers', compute='_compute_lot_ids')
     origin_returned_move_id = fields.Many2one('stock.move', 'Origin return move', copy=False, help='Move that created the return move')
@@ -373,9 +373,6 @@ class StockMove(models.Model):
                     rules = Push.search(domain + [('route_id', 'in', move.warehouse_id.route_ids.ids)], order='route_sequence, sequence', limit=1)
                 elif move.picking_id.picking_type_id.warehouse_id:
                     rules = Push.search(domain + [('route_id', 'in', move.picking_id.picking_type_id.warehouse_id.route_ids.ids)], order='route_sequence, sequence', limit=1)
-            if not rules:
-                # if no specialized push rule has been found yet, we try to find a general one (without route)
-                rules = Push.search(domain + [('route_id', '=', False)], order='sequence')
             # Make sure it is not returning the return
             if rules and (not move.origin_returned_move_id or move.origin_returned_move_id.location_dest_id.id != rules.location_dest_id.id):
                 rules._apply(move)
@@ -411,6 +408,14 @@ class StockMove(models.Model):
         type (moves should already have them identical). Otherwise, create a new
         picking to assign them to. """
         Picking = self.env['stock.picking']
+
+        # If this method is called in batch by a write on a one2many and
+        # at some point had to create a picking, some next iterations could
+        # try to find back the created picking. As we look for it by searching
+        # on some computed fields, we have to force a recompute, else the
+        # record won't be found.
+        self.recompute()
+
         for move in self:
             picking = Picking.search([
                 ('group_id', '=', move.group_id.id),
@@ -567,7 +572,9 @@ class StockMove(models.Model):
                 # in case the move is returned, we want to try to find quants before forcing the assignment
                 if not move.origin_returned_move_id:
                     continue
-            if move.product_id.type == 'consu':
+            # if the move is preceeded, restrict the choice of quants in the ones moved previously in original move
+            ancestors = move.find_move_ancestors()
+            if move.product_id.type == 'consu' and not ancestors:
                 moves_to_assign |= move
                 continue
             else:
@@ -576,8 +583,6 @@ class StockMove(models.Model):
                 # we always search for yet unassigned quants
                 main_domain[move.id] = [('reservation_id', '=', False), ('qty', '>', 0)]
 
-                # if the move is preceeded, restrict the choice of quants in the ones moved previously in original move
-                ancestors = move.find_move_ancestors()
                 if move.state == 'waiting' and not ancestors:
                     # if the waiting move hasn't yet any ancestor (PO/MO not confirmed yet), don't find any quant available in stock
                     main_domain[move.id] += [('id', '=', False)]
@@ -626,7 +631,7 @@ class StockMove(models.Model):
             if move.state != 'assigned' and not self.env.context.get('reserve_only_ops'):
                 qty_already_assigned = move.reserved_availability
                 qty = move.product_qty - qty_already_assigned
-                
+
                 quants = Quant.quants_get_preferred_domain(qty, move, domain=main_domain[move.id], preferred_domain_list=[])
                 Quant.quants_reserve(quants, move)
 
@@ -750,8 +755,8 @@ class StockMove(models.Model):
                         owner_id=pack_operation.owner_id.id, src_package_id=pack_operation.package_id.id,
                         dest_package_id=dest_package_id)
                     if redo_false_quants:
-                        false_quants_move = [x for x in move_rec_updateme.reserved_quant_ids if (not x.lot_id) and (x.owner_id.id == pack_operation.owner_id.id) \
-                                             and (x.location_id.id == pack_operation.location_id.id) and (x.package_id.id != pack_operation.package_id.id)]
+                        false_quants_move = [x for x in move_rec_updateme.reserved_quant_ids if (not x.lot_id) and (x.owner_id.id == pack_operation.owner_id.id) and
+                                             (x.location_id.id == pack_operation.location_id.id) and (x.package_id.id == pack_operation.package_id.id)]
         return True
 
     @api.multi
@@ -789,7 +794,11 @@ class StockMove(models.Model):
             # compute quantities for each lot + check quantities match
             lot_quantities = dict((pack_lot.lot_id.id, operation.product_uom_id._compute_quantity(pack_lot.qty, operation.product_id.uom_id)
             ) for pack_lot in operation.pack_lot_ids)
-            if operation.pack_lot_ids and float_compare(sum(lot_quantities.values()), operation.product_qty, precision_rounding=operation.product_uom_id.rounding) != 0.0:
+
+            qty = operation.product_qty
+            if operation.product_uom_id and operation.product_uom_id != operation.product_id.uom_id:
+                qty = operation.product_uom_id._compute_quantity(qty, operation.product_id.uom_id)
+            if operation.pack_lot_ids and float_compare(sum(lot_quantities.values()), qty, precision_rounding=operation.product_id.uom_id.rounding) != 0.0:
                 raise UserError(_('You have a difference between the quantity on the operation and the quantities specified for the lots. '))
 
             quants_taken = []
@@ -934,7 +943,7 @@ class StockMove(models.Model):
         # TDE CLEANME: used only in write in this file, to clean
         # ctx['do_not_propagate'] = True
         self.with_context(do_not_propagate=True).write({'product_uom_qty': self.product_uom_qty - uom_qty})
-        
+
         if self.move_dest_id and self.propagate and self.move_dest_id.state not in ('done', 'cancel'):
             new_move_prop = self.move_dest_id.split(qty)
             new_move.write({'move_dest_id': new_move_prop})

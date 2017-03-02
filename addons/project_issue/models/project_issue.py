@@ -9,7 +9,7 @@ from odoo.tools.safe_eval import safe_eval
 class ProjectIssue(models.Model):
     _name = "project.issue"
     _description = "Project Issue"
-    _inherit = ['mail.thread', 'ir.needaction_mixin']
+    _inherit = ['mail.thread', 'mail.activity.mixin']
     _order = "priority desc, create_date desc"
     _mail_post_access = 'read'
 
@@ -84,28 +84,32 @@ class ProjectIssue(models.Model):
     @api.depends('create_date', 'date_closed', 'date_open')
     def _compute_day(self):
         for issue in self:
-            # if the working hours on the project are not defined, use default ones (8 -> 12 and 13 -> 17 * 5)
-            calendar = issue.project_id.resource_calendar_id
-
             dt_create_date = fields.Datetime.from_string(issue.create_date)
+
             if issue.date_open:
                 dt_date_open = fields.Datetime.from_string(issue.date_open)
                 issue.day_open = (dt_date_open - dt_create_date).total_seconds() / (24.0 * 3600)
-                issue.working_hours_open = calendar.get_working_hours(dt_create_date, dt_date_open,
-                    compute_leaves=True, resource_id=False, default_interval=(8, 16))
+                if issue.project_id.resource_calendar_id:
+                    issue.working_hours_open = issue.project_id.resource_calendar_id.get_work_hours_count(
+                        dt_create_date, dt_date_open, False, compute_leaves=True)
+                else:
+                    issue.working_hours_open = 0
 
             if issue.date_closed:
                 dt_date_closed = fields.Datetime.from_string(issue.date_closed)
                 issue.day_close = (dt_date_closed - dt_create_date).total_seconds() / (24.0 * 3600)
-                issue.working_hours_close = calendar.get_working_hours(dt_create_date, dt_date_closed,
-                    compute_leaves=True, resource_id=False, default_interval=(8, 16))
+                if issue.project_id.resource_calendar_id:
+                    issue.working_hours_close = issue.project_id.resource_calendar_id.get_work_hours_count(
+                        dt_create_date, dt_date_closed, False, compute_leaves=True)
+                else:
+                    issue.working_hours_close = 0
 
     @api.multi
     @api.depends('create_date', 'date_action_last', 'date_last_stage_update')
     def _compute_inactivity_days(self):
         current_datetime = fields.Datetime.from_string(fields.Datetime.now())
         for issue in self:
-            dt_create_date = fields.Datetime.from_string(issue.create_date)
+            dt_create_date = fields.Datetime.from_string(issue.create_date) or current_datetime
             issue.days_since_creation = (current_datetime - dt_create_date).days
 
             if issue.date_action_last:
@@ -123,14 +127,16 @@ class ProjectIssue(models.Model):
 
     @api.onchange('project_id')
     def _onchange_project_id(self):
+        default_partner_id = self.env.context.get('default_partner_id')
+        default_partner = self.env['res.partner'].browse(default_partner_id) if default_partner_id else self.env['res.partner']
         if self.project_id:
             if not self.partner_id and not self.email_from:
                 self.partner_id = self.project_id.partner_id.id
                 self.email_from = self.project_id.partner_id.email
             self.stage_id = self.stage_find(self.project_id.id, [('fold', '=', False)])
         else:
-            self.partner_id = False
-            self.email_from = False
+            self.partner_id = default_partner
+            self.email_from = default_partner.email
             self.stage_id = False
 
     @api.onchange('task_id')
@@ -296,12 +302,11 @@ class ProjectIssue(models.Model):
         if custom_values:
             defaults.update(custom_values)
 
-        res_id = super(ProjectIssue, self.with_context(create_context)).message_new(msg, custom_values=defaults)
-        issue = self.browse(res_id)
+        issue = super(ProjectIssue, self.with_context(create_context)).message_new(msg, custom_values=defaults)
         email_list = issue.email_split(msg)
         partner_ids = filter(None, issue._find_partner_from_emails(email_list))
         issue.message_subscribe(partner_ids)
-        return res_id
+        return issue
 
     @api.multi
     def message_update(self, msg, update_vals=None):

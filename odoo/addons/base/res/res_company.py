@@ -122,16 +122,14 @@ class Company(models.Model):
     child_ids = fields.One2many('res.company', 'parent_id', string='Child Companies')
     partner_id = fields.Many2one('res.partner', string='Partner', required=True)
     rml_header = fields.Text(required=True, default=_get_header)
-    rml_header1 = fields.Char(string='Company Tagline', help="Appears by default on the top right corner of your printed documents (report header).")
+    rml_header1 = fields.Text(string='Company Tagline', help="Appears by default on the top right corner of your printed documents (report header).")
     rml_header2 = fields.Text(string='RML Internal Header', required=True, default=_header2)
     rml_header3 = fields.Text(string='RML Internal Header for Landscape Reports', required=True, default=_header3)
-    rml_footer = fields.Text(string='Custom Report Footer', translate=True, help="Footer text displayed at the bottom of all reports.")
-    rml_footer_readonly = fields.Text(related='rml_footer', string='Report Footer', readonly=True)
-    custom_footer = fields.Boolean(help="Check this to define the report footer manually. Otherwise it will be filled in automatically.")
+    rml_footer = fields.Text(string='Report Footer', translate=True, help="Footer text displayed at the bottom of all reports.")
     font = fields.Many2one('res.font', string="Font", default=lambda self: self._get_font(),
                            domain=[('mode', 'in', ('Normal', 'Regular', 'all', 'Book'))],
                            help="Set the font into the report header, it will be used as default font in the RML reports of the user company")
-    logo = fields.Binary(related='partner_id.image', default=_get_logo)
+    logo = fields.Binary(related='partner_id.image', default=_get_logo, string="Company Logo")
     # logo_web: do not store in attachments, since the image is retrieved in SQL for
     # performance reasons (see addons/web/controllers/main.py, Binary.company_logo)
     logo_web = fields.Binary(compute='_compute_logo_web', store=True)
@@ -149,7 +147,7 @@ class Company(models.Model):
     phone = fields.Char(related='partner_id.phone', store=True)
     fax = fields.Char(compute='_compute_address', inverse='_inverse_fax')
     website = fields.Char(related='partner_id.website')
-    vat = fields.Char(related='partner_id.vat', string="Tax ID")
+    vat = fields.Char(related='partner_id.vat', string="TIN")
     company_registry = fields.Char()
     rml_paper_format = fields.Selection([('a4', 'A4'), ('us_letter', 'US Letter')], string="Paper Format", required=True, default='a4', oldname='paper_format')
     sequence = fields.Integer(help='Used to order Companies in the company switcher', default=10)
@@ -158,20 +156,25 @@ class Company(models.Model):
         ('name_uniq', 'unique (name)', 'The company name must be unique !')
     ]
 
+    def _get_company_address_fields(self, partner):
+        return {
+            'street'     : partner.street,
+            'street2'    : partner.street2,
+            'city'       : partner.city,
+            'zip'        : partner.zip,
+            'state_id'   : partner.state_id,
+            'country_id' : partner.country_id,
+            'fax'        : partner.fax
+        }
+
     # TODO @api.depends(): currently now way to formulate the dependency on the
     # partner's contact address
     def _compute_address(self):
         for company in self.filtered(lambda company: company.partner_id):
             address_data = company.partner_id.sudo().address_get(adr_pref=['contact'])
             if address_data['contact']:
-                partner = company.partner_id.browse(address_data['contact'])
-                company.street = partner.street
-                company.street2 = partner.street2
-                company.city = partner.city
-                company.zip = partner.zip
-                company.state_id = partner.state_id
-                company.country_id = partner.country_id
-                company.fax = partner.fax
+                partner = company.partner_id.browse(address_data['contact']).sudo()
+                company.write(company._get_company_address_fields(partner))
 
     def _inverse_street(self):
         for company in self:
@@ -205,21 +208,6 @@ class Company(models.Model):
     def _compute_logo_web(self):
         for company in self:
             company.logo_web = tools.image_resize_image(company.partner_id.image, (180, None))
-
-    @api.onchange('custom_footer', 'phone', 'fax', 'email', 'website', 'vat', 'company_registry')
-    def onchange_footer(self):
-        if not self.custom_footer:
-            # first line (notice that missing elements are filtered out before the join)
-            res = ' | '.join(filter(bool, [
-                self.phone            and '%s: %s' % (_('Phone'), self.phone),
-                self.fax              and '%s: %s' % (_('Fax'), self.fax),
-                self.email            and '%s: %s' % (_('Email'), self.email),
-                self.website          and '%s: %s' % (_('Website'), self.website),
-                self.vat              and '%s: %s' % (_('TIN'), self.vat),
-                self.company_registry and '%s: %s' % (_('Reg'), self.company_registry),
-            ]))
-            self.rml_footer_readonly = res
-            self.rml_footer = res
 
     @api.onchange('state_id')
     def _onchange_state(self):

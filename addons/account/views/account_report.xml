@@ -12,6 +12,7 @@
             attachment_use="True"
             attachment="(object.state in ('open','paid')) and ('INV'+(object.number or '').replace('/','')+'.pdf')"
         />
+
         <record id="account_invoices" model="ir.actions.report.xml">
             <field name="print_report_name">(object.type == 'out_invoice' and object.state == 'draft' and 'Draft Invoice' or
             object.type == 'out_invoice' and object.state in ('open','paid') and 'Invoice'+'-'+(object.number) or
@@ -109,6 +110,16 @@
             name="account.report_partnerledger"
             file="account.report_partnerledger"
             />
+
+        <report
+            id="action_report_payment_receipt"
+            model="account.payment"
+            string="Print Receipt"
+            report_type="qweb-pdf"
+            name="account.report_payment_receipt"
+            file="account.report_payment_receipt"
+            menu="False"
+        />
 
     </data>
 </odoo>

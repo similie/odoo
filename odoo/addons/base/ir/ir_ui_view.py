@@ -79,9 +79,8 @@ class ViewCustom(models.Model):
     @api.model_cr_context
     def _auto_init(self):
         res = super(ViewCustom, self)._auto_init()
-        self._cr.execute("SELECT indexname FROM pg_indexes WHERE indexname = 'ir_ui_view_custom_user_id_ref_id'")
-        if not self._cr.fetchone():
-            self._cr.execute("CREATE INDEX ir_ui_view_custom_user_id_ref_id ON ir_ui_view_custom (user_id, ref_id)")
+        tools.create_index(self._cr, 'ir_ui_view_custom_user_id_ref_id',
+                           self._table, ['user_id', 'ref_id'])
         return res
 
 
@@ -123,6 +122,31 @@ def get_view_arch_from_file(filename, xmlid):
     _logger.warning("Could not find view arch definition in file '%s' for xmlid '%s'", filename, xmlid)
     return None
 
+def add_text_before(node, text):
+    """ Add text before ``node`` in its XML tree. """
+    if text is None:
+        return
+    prev = node.getprevious()
+    if prev is not None:
+        prev.tail = (prev.tail or "") + text
+    else:
+        parent = node.getparent()
+        parent.text = (parent.text or "") + text
+
+def add_text_inside(node, text):
+    """ Add text inside ``node``. """
+    if text is None:
+        return
+    if len(node):
+        node[-1].tail = (node[-1].tail or "") + text
+    else:
+        node.text = (node.text or "") + text
+
+def remove_element(node):
+    """ Remove ``node`` but not its tail, from its XML tree. """
+    add_text_before(node, node.tail)
+    node.getparent().remove(node)
+
 xpath_utils = etree.FunctionNamespace(None)
 xpath_utils['hasclass'] = _hasclass
 
@@ -131,7 +155,7 @@ TRANSLATED_ATTRS_RE = re.compile(r"@(%s)\b" % "|".join(TRANSLATED_ATTRS))
 
 class View(models.Model):
     _name = 'ir.ui.view'
-    _order = "priority,name"
+    _order = "priority,name,id"
 
     # Holds the RNG schema
     _relaxng_validator = None
@@ -200,9 +224,13 @@ actual arch.
             if 'xml' in config['dev_mode'] and view.arch_fs and view.xml_id:
                 # It is safe to split on / herebelow because arch_fs is explicitely stored with '/'
                 fullpath = get_resource_path(*view.arch_fs.split('/'))
-                arch_fs = get_view_arch_from_file(fullpath, view.xml_id)
-                # replace %(xml_id)s, %(xml_id)d, %%(xml_id)s, %%(xml_id)d by the res_id
-                arch_fs = arch_fs and resolve_external_ids(arch_fs, view.xml_id)
+                if fullpath:
+                    arch_fs = get_view_arch_from_file(fullpath, view.xml_id)
+                    # replace %(xml_id)s, %(xml_id)d, %%(xml_id)s, %%(xml_id)d by the res_id
+                    arch_fs = arch_fs and resolve_external_ids(arch_fs, view.xml_id)
+                else:
+                    _logger.warning("View %s: Full path [%s] cannot be found.", view.xml_id, view.arch_fs)
+                    arch_fs = False
             view.arch = arch_fs or view.arch_db
 
     def _inverse_arch(self):
@@ -234,20 +262,20 @@ actual arch.
     def _compute_model_data_id(self):
         # get the first ir_model_data record corresponding to self
         domain = [('model', '=', 'ir.ui.view'), ('res_id', 'in', self.ids)]
-        for data in self.env['ir.model.data'].search_read(domain, ['res_id'], order='id desc'):
+        for data in self.env['ir.model.data'].sudo().search_read(domain, ['res_id'], order='id desc'):
             view = self.browse(data['res_id'])
             view.model_data_id = data['id']
 
     def _search_model_data_id(self, operator, value):
         name = 'name' if isinstance(value, basestring) else 'id'
         domain = [('model', '=', 'ir.ui.view'), (name, operator, value)]
-        data = self.env['ir.model.data'].search(domain)
+        data = self.env['ir.model.data'].sudo().search(domain)
         return [('id', 'in', data.mapped('res_id'))]
 
     def _compute_xml_id(self):
         xml_ids = collections.defaultdict(list)
         domain = [('model', '=', 'ir.ui.view'), ('res_id', 'in', self.ids)]
-        for data in self.env['ir.model.data'].search_read(domain, ['module', 'name', 'res_id']):
+        for data in self.env['ir.model.data'].sudo().search_read(domain, ['module', 'name', 'res_id']):
             xml_ids[data['res_id']].append("%s.%s" % (data['module'], data['name']))
         for view in self:
             view.xml_id = xml_ids.get(view.id, [''])[0]
@@ -278,7 +306,7 @@ actual arch.
                         self.raise_view_error(message, self.id)
         return True
 
-    @api.constrains('arch', 'arch_base')
+    @api.constrains('arch_db')
     def _check_xml(self):
         # Sanity checks: the view should not break anything upon rendering!
         # Any exception raised below will cause a transaction rollback.
@@ -323,9 +351,8 @@ actual arch.
     @api.model_cr_context
     def _auto_init(self):
         res = super(View, self)._auto_init()
-        self._cr.execute('SELECT indexname FROM pg_indexes WHERE indexname = \'ir_ui_view_model_type_inherit_id\'')
-        if not self._cr.fetchone():
-            self._cr.execute('CREATE INDEX ir_ui_view_model_type_inherit_id ON ir_ui_view (model, inherit_id)')
+        tools.create_index(self._cr, 'ir_ui_view_model_type_inherit_id',
+                           self._table, ['model', 'inherit_id'])
         return res
 
     def _compute_defaults(self, values):
@@ -466,7 +493,7 @@ actual arch.
         :return: a node in the source matching the spec
         """
         if spec.tag == 'xpath':
-            nodes = arch.xpath(spec.get('expr'))
+            nodes = etree.ETXPath(spec.get('expr'))(arch)
             return nodes[0] if nodes else None
         elif spec.tag == 'field':
             # Only compare the field name: a field can be only once in a given view
@@ -555,21 +582,26 @@ actual arch.
                             node.set(attribute, value)
                         elif attribute in node.attrib:
                             del node.attrib[attribute]
-                else:
-                    sib = node.getnext()
+                elif pos == 'inside':
+                    add_text_inside(node, spec.text)
                     for child in spec:
-                        if pos == 'inside':
-                            node.append(child)
-                        elif pos == 'after':
-                            if sib is None:
-                                node.addnext(child)
-                                node = child
-                            else:
-                                sib.addprevious(child)
-                        elif pos == 'before':
-                            node.addprevious(child)
-                        else:
-                            self.raise_view_error(_("Invalid position attribute: '%s'") % pos, inherit_id)
+                        node.append(child)
+                elif pos == 'after':
+                    # add a sentinel element right after node, insert content of
+                    # spec before the sentinel, then remove the sentinel element
+                    sentinel = E.sentinel()
+                    node.addnext(sentinel)
+                    add_text_before(sentinel, spec.text)
+                    for child in spec:
+                        sentinel.addprevious(child)
+                    remove_element(sentinel)
+                elif pos == 'before':
+                    add_text_before(node, spec.text)
+                    for child in spec:
+                        node.addprevious(child)
+                else:
+                    self.raise_view_error(_("Invalid position attribute: '%s'") % pos, inherit_id)
+
             else:
                 attrs = ''.join([
                     ' %s="%s"' % (attr, spec.get(attr))
@@ -804,31 +836,6 @@ actual arch.
         return arch
 
     @api.model
-    def _disable_workflow_buttons(self, model, node):
-        """ Set the buttons in node to readonly if the user can't activate them. """
-        if model is None or self.env.user.id == SUPERUSER_ID:
-            # admin user can always activate workflow buttons
-            return node
-
-        # TODO handle the case of more than one workflow for a model or multiple
-        # transitions with different groups and same signal
-        user_group_ids = set(self.env.user.groups_id.ids)
-        buttons = (n for n in node.getiterator('button') if n.get('type') != 'object')
-        for button in buttons:
-            query = """SELECT DISTINCT t.group_id
-                         FROM wkf
-                   INNER JOIN wkf_activity a ON a.wkf_id = wkf.id
-                   INNER JOIN wkf_transition t ON (t.act_to = a.id)
-                        WHERE wkf.osv = %s
-                          AND t.signal = %s
-                          AND t.group_id is NOT NULL"""
-            self._cr.execute(query, (model, button.get('name')))
-            group_ids = set(row[0] for row in self._cr.fetchall() if row[0])
-            can_click = not group_ids or bool(user_group_ids & group_ids)
-            button.set('readonly', str(int(not can_click)))
-        return node
-
-    @api.model
     def postprocess_and_fields(self, model, node, view_id):
         """ Return an architecture and a description of all the fields.
 
@@ -864,7 +871,6 @@ actual arch.
 
         node = self.add_on_change(model, node)
         fields_def = self.postprocess(model, node, view_id, False, fields)
-        node = self._disable_workflow_buttons(model, node)
         if node.tag in ('kanban', 'tree', 'form', 'gantt'):
             for action, operation in (('create', 'create'), ('delete', 'unlink'), ('edit', 'write')):
                 if (not node.get(action) and
@@ -1020,7 +1026,7 @@ actual arch.
     @tools.ormcache('self.id')
     def get_view_xmlid(self):
         domain = [('model', '=', 'ir.ui.view'), ('res_id', '=', self.id)]
-        xmlid = self.env['ir.model.data'].search_read(domain, ['module', 'name'])[0]
+        xmlid = self.env['ir.model.data'].sudo().search_read(domain, ['module', 'name'])[0]
         return '%s.%s' % (xmlid['module'], xmlid['name'])
 
     @api.model
@@ -1137,7 +1143,7 @@ actual arch.
         query = """SELECT max(v.id)
                      FROM ir_ui_view v
                 LEFT JOIN ir_model_data md ON (md.model = 'ir.ui.view' AND md.res_id = v.id)
-                    WHERE md.module IS NULL
+                    WHERE md.module NOT IN (SELECT name FROM ir_module_module)
                       AND v.model = %s
                       AND v.active = true
                  GROUP BY coalesce(v.inherit_id, v.id)"""

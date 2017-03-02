@@ -18,7 +18,6 @@ class Message(models.Model):
         comments (OpenChatter discussion) and incoming emails. """
     _name = 'mail.message'
     _description = 'Message'
-    _inherit = ['ir.needaction_mixin']
     _order = 'id desc'
     _rec_name = 'record_name'
 
@@ -62,6 +61,9 @@ class Message(models.Model):
              "message, comment for other messages such as user replies",
         oldname='type')
     subtype_id = fields.Many2one('mail.message.subtype', 'Subtype', ondelete='set null', index=True)
+    mail_activity_type_id = fields.Many2one(
+        'mail.activity.type', 'Mail Activity Type',
+        index=True, ondelete='set null')
     # origin
     email_from = fields.Char(
         'From', default=_get_default_from,
@@ -133,10 +135,6 @@ class Message(models.Model):
         if operator == '=' and operand:
             return [('starred_partner_ids', 'in', [self.env.user.partner_id.id])]
         return [('starred_partner_ids', 'not in', [self.env.user.partner_id.id])]
-
-    @api.model
-    def _needaction_domain_get(self):
-        return [('needaction', '=', True)]
 
     #------------------------------------------------------
     # Notification API
@@ -334,7 +332,7 @@ class Message(models.Model):
                                 if partner.id in partner_tree]
 
             customer_email_data = []
-            for notification in message.notification_ids.filtered(lambda notif: notif.res_partner_id.partner_share):
+            for notification in message.notification_ids.filtered(lambda notif: notif.res_partner_id.partner_share and notif.res_partner_id.active):
                 customer_email_data.append((partner_tree[notification.res_partner_id.id][0], partner_tree[notification.res_partner_id.id][1], notification.email_status))
 
             attachment_ids = []
@@ -684,7 +682,7 @@ class Message(models.Model):
         """ Return a specific reply_to: alias of the document through
         message_get_reply_to or take the email_from """
         model, res_id, email_from = values.get('model', self._context.get('default_model')), values.get('res_id', self._context.get('default_res_id')), values.get('email_from')  # ctx values / defualt_get res ?
-        if model:
+        if model and hasattr(self.env[model], 'message_get_reply_to'):
             # return self.env[model].browse(res_id).message_get_reply_to([res_id], default=email_from)[res_id]
             return self.env[model].message_get_reply_to([res_id], default=email_from)[res_id]
         else:
@@ -700,6 +698,13 @@ class Message(models.Model):
         else:
             message_id = tools.generate_tracking_message_id('private')
         return message_id
+
+    @api.multi
+    def _invalidate_documents(self):
+        """ Invalidate the cache of the documents followed by ``self``. """
+        for record in self:
+            if record.model and record.res_id:
+                self.env[record.model].invalidate_cache(ids=[record.res_id])
 
     @api.model
     def create(self, values):
@@ -717,9 +722,11 @@ class Message(models.Model):
             values['record_name'] = self._get_record_name(values)
 
         message = super(Message, self).create(values)
+        message._invalidate_documents()
 
-        message._notify(force_send=self.env.context.get('mail_notify_force_send', True),
-                        user_signature=self.env.context.get('mail_notify_user_signature', True))
+        if not self.env.context.get('message_create_from_mail_mail'):
+            message._notify(force_send=self.env.context.get('mail_notify_force_send', True),
+                            user_signature=self.env.context.get('mail_notify_user_signature', True))
         return message
 
     @api.multi
@@ -730,6 +737,14 @@ class Message(models.Model):
         return super(Message, self).read(fields=fields, load=load)
 
     @api.multi
+    def write(self, vals):
+        if 'model' in vals or 'res_id' in vals:
+            self._invalidate_documents()
+        res = super(Message, self).write(vals)
+        self._invalidate_documents()
+        return res
+
+    @api.multi
     def unlink(self):
         # cascade-delete attachments that are directly attached to the message (should only happen
         # for mail.messages that act as parent for a standalone mail.mail record).
@@ -737,6 +752,7 @@ class Message(models.Model):
         self.mapped('attachment_ids').filtered(
             lambda attach: attach.res_model == self._name and (attach.res_id in self.ids or attach.res_id == 0)
         ).unlink()
+        self._invalidate_documents()
         return super(Message, self).unlink()
 
     #------------------------------------------------------
@@ -745,18 +761,16 @@ class Message(models.Model):
 
     @api.multi
     def _notify(self, force_send=False, send_after_commit=True, user_signature=True):
-        """ Add the related record followers to the destination partner_ids if is not a private message.
-            Call mail_notification.notify to manage the email sending
-        """
+        """ Compute recipients to notify based on specified recipients and document
+        followers. Delegate notification to partners to send emails and bus notifications
+        and to channels to broadcast messages on channels """
         group_user = self.env.ref('base.group_user')
-        # have a sudoed copy to manipulate partners (public can go here with 
-        # website modules like forum / blog / ...
+        # have a sudoed copy to manipulate partners (public can go here with website modules like forum / blog / ... )
         self_sudo = self.sudo()
 
-        # TDE CHECK: add partners / channels as arguments to be able to notify a message with / without computation ??
-        self.ensure_one()  # tde: not sure, just for testinh, will see
-        partners = self.env['res.partner'] | self.partner_ids
-        channels = self.env['mail.channel'] | self.channel_ids
+        self.ensure_one()
+        partners_sudo = self.env['res.partner'].sudo() | self_sudo.partner_ids
+        channels_sudo = self.env['mail.channel'].sudo() | self_sudo.channel_ids
 
         # all followers of the mail.message document have to be added as partners and notified
         # and filter to employees only if the subtype is internal
@@ -767,28 +781,38 @@ class Message(models.Model):
             ]).filtered(lambda fol: self.subtype_id in fol.subtype_ids)
             if self_sudo.subtype_id.internal:
                 followers = followers.filtered(lambda fol: fol.channel_id or (fol.partner_id.user_ids and group_user in fol.partner_id.user_ids[0].mapped('groups_id')))
-            channels = self_sudo.channel_ids | followers.mapped('channel_id')
-            partners = self_sudo.partner_ids | followers.mapped('partner_id')
-        else:
-            channels = self_sudo.channel_ids
-            partners = self_sudo.partner_ids
+            channels_sudo |= followers.mapped('channel_id')
+            partners_sudo |= followers.mapped('partner_id')
 
         # remove author from notified partners
         if not self._context.get('mail_notify_author', False) and self_sudo.author_id:
-            partners = partners - self_sudo.author_id
+            partners_sudo = partners_sudo - self_sudo.author_id
 
         # update message, with maybe custom values
         message_values = {
-            'channel_ids': [(6, 0, channels.ids)],
-            'needaction_partner_ids': [(6, 0, partners.ids)]
+            'channel_ids': [(6, 0, channels_sudo.ids)],
+            'needaction_partner_ids': [(6, 0, partners_sudo.ids)]
         }
         if self.model and self.res_id and hasattr(self.env[self.model], 'message_get_message_notify_values'):
             message_values.update(self.env[self.model].browse(self.res_id).message_get_message_notify_values(self, message_values))
         self.write(message_values)
 
         # notify partners and channels
-        partners._notify(self, force_send=force_send, send_after_commit=send_after_commit, user_signature=user_signature)
-        channels._notify(self)
+        # those methods are called as SUPERUSER because portal users posting messages
+        # have no access to partner model. Maybe propagating a real uid could be necessary.
+        email_channels = channels_sudo.filtered(lambda channel: channel.email_send)
+        # make a dedicated search on res.users to avoid user_ids.notification_type that will be user_ids.id in [ARRAY]
+        notif_users = self.env['res.users'].sudo().search([
+            ('partner_id', 'in', partners_sudo.ids),
+            ('notification_type', '=', 'inbox')
+        ])
+        partners_sudo.search([
+            '|',
+            ('id', 'in', (partners_sudo - notif_users.mapped('partner_id')).ids),
+            ('channel_ids', 'in', email_channels.ids),
+            ('email', '!=', self_sudo.author_id and self_sudo.author_id.email or self_sudo.email_from),
+        ])._notify(self, force_send=force_send, send_after_commit=send_after_commit, user_signature=user_signature)
+        channels_sudo._notify(self)
 
         # Discard cache, because child / parent allow reading and therefore
         # change access rights.

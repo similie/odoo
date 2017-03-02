@@ -106,14 +106,6 @@ def check_method_name(name):
     if regex_private.match(name):
         raise AccessError(_('Private methods (such as %s) cannot be called remotely.') % (name,))
 
-POSTGRES_CONFDELTYPES = {
-    'RESTRICT': 'r',
-    'NO ACTION': 'a',
-    'CASCADE': 'c',
-    'SET NULL': 'n',
-    'SET DEFAULT': 'd',
-}
-
 def intersect(la, lb):
     return filter(lambda x: x in lb, la)
 
@@ -266,107 +258,14 @@ class BaseModel(object):
         pass
 
     @api.model_cr_context
-    def _field_create(self):
-        """ Reflect the models and its fields in the models 'ir.model' and
+    def _reflect(self):
+        """ Reflect the model and its fields in the models 'ir.model' and
         'ir.model.fields'. Also create entries in 'ir.model.data' if the key
         'module' is passed to the context.
         """
-        cr = self._cr
-
-        # create/update the entries in 'ir.model' and 'ir.model.data'
-        params = {
-            'model': self._name,
-            'name': self._description,
-            'info': next(cls.__doc__ for cls in type(self).mro() if cls.__doc__),
-            'state': 'manual' if self._custom else 'base',
-            'transient': self._transient,
-        }
-        cr.execute(""" UPDATE ir_model
-                       SET name=%(name)s, info=%(info)s, transient=%(transient)s
-                       WHERE model=%(model)s
-                       RETURNING id """, params)
-        if not cr.rowcount:
-            cr.execute(""" INSERT INTO ir_model (model, name, info, state, transient)
-                           VALUES (%(model)s, %(name)s, %(info)s, %(state)s, %(transient)s)
-                           RETURNING id """, params)
-        model = self.env['ir.model'].browse(cr.fetchone()[0])
-        self._context['todo'].append((10, model.modified, [list(params)]))
-
-        if 'module' in self._context:
-            xmlid = 'model_' + self._name.replace('.', '_')
-            cr.execute("SELECT * FROM ir_model_data WHERE name=%s AND module=%s",
-                       (xmlid, self._context['module']))
-            if not cr.rowcount:
-                cr.execute(""" INSERT INTO ir_model_data (name, date_init, date_update, module, model, res_id)
-                               VALUES (%s, (now() at time zone 'UTC'), (now() at time zone 'UTC'), %s, %s, %s) """,
-                           (xmlid, self._context['module'], 'ir.model', model.id))
-
-        # create/update the entries in 'ir.model.fields' and 'ir.model.data'
-        cr.execute("SELECT * FROM ir_model_fields WHERE model=%s", (self._name,))
-        cols = {rec['name']: rec for rec in cr.dictfetchall()}
-
-        Fields = self.env['ir.model.fields']
-
-        # sparse fields should be created at the end, as they depend on their serialized field
-        model_fields = sorted(self._fields.itervalues(), key=lambda field: field.type == 'sparse')
-        for field in model_fields:
-            vals = {
-                'model_id': model.id,
-                'model': self._name,
-                'name': field.name,
-                'field_description': field.string,
-                'help': field.help or None,
-                'ttype': field.type,
-                'relation': field.comodel_name or None,
-                'index': bool(field.index),
-                'store': bool(field.store),
-                'copy': bool(field.copy),
-                'related': ".".join(field.related) if field.related else None,
-                'readonly': bool(field.readonly),
-                'required': bool(field.required),
-                'selectable': bool(field.search or field.store),
-                'translate': bool(field.translate),
-                'relation_field': field.inverse_name if field.type == 'one2many' else None,
-                'serialization_field_id': None,
-                'relation_table': field.relation if field.type == 'many2many' else None,
-                'column1': field.column1 if field.type == 'many2many' else None,
-                'column2': field.column2 if field.type == 'many2many' else None,
-            }
-            if getattr(field, 'serialization_field', None):
-                # resolve link to serialization_field if specified by name
-                serialization_field = Fields.search([('model', '=', vals['model']), ('name', '=', field.serialization_field)])
-                if not serialization_field:
-                    raise UserError(_("Serialization field `%s` not found for sparse field `%s`!") % (field.serialization_field, field.name))
-                vals['serialization_field_id'] = serialization_field.id
-
-            if field.name not in cols:
-                query = "INSERT INTO ir_model_fields (%s) VALUES (%s) RETURNING id" % (
-                    ",".join(vals),
-                    ",".join("%%(%s)s" % name for name in vals),
-                )
-                cr.execute(query, vals)
-                field_id = cr.fetchone()[0]
-                self._context['todo'].append((20, Fields.browse(field_id).modified, [list(vals)]))
-
-                module = field._module or self._context.get('module')
-                if module:
-                    xmlid = 'field_%s_%s' % (self._table, field.name)
-                    cr.execute("SELECT name FROM ir_model_data WHERE name=%s", (xmlid,))
-                    if cr.fetchone():
-                        xmlid = xmlid + "_" + str(field_id)
-                    cr.execute(""" INSERT INTO ir_model_data (name, date_init, date_update, module, model, res_id)
-                                   VALUES (%s, (now() at time zone 'UTC'), (now() at time zone 'UTC'), %s, %s, %s) """,
-                               (xmlid, module, 'ir.model.fields', field_id))
-
-            elif not all(cols[field.name][key] == vals[key] for key in vals):
-                names = set(vals) - {'model', 'name'}
-                query = "UPDATE ir_model_fields SET %s WHERE model=%%(model)s AND name=%%(name)s RETURNING id" % (
-                    ",".join("%s=%%(%s)s" % (name, name) for name in names),
-                )
-                cr.execute(query, vals)
-                field_id = cr.fetchone()[0]
-                self._context['todo'].append((20, Fields.browse(field_id).modified, [names]))
-
+        self.env['ir.model']._reflect_model(self)
+        self.env['ir.model.fields']._reflect_model(self)
+        self.env['ir.model.constraint']._reflect_model(self)
         self.invalidate_cache()
 
     @api.model
@@ -637,6 +536,8 @@ class BaseModel(object):
 
     @api.model
     def _add_manual_fields(self, partial):
+        if not self.pool._init_modules:
+            return
         IrModelFields = self.env['ir.model.fields']
         manual_fields = self.pool.get_manual_fields(self._cr, self._name)
         for name, field_data in manual_fields.iteritems():
@@ -664,8 +565,12 @@ class BaseModel(object):
         cls = type(self)
         methods = []
         for attr, func in getmembers(cls, is_constraint):
-            if not all(name in cls._fields for name in func._constrains):
-                _logger.warning("@constrains%r parameters must be field names", func._constrains)
+            for name in func._constrains:
+                field = cls._fields.get(name)
+                if not field:
+                    _logger.warning("method %s.%s: @constrains parameter %r is not a field name", cls._name, attr, name)
+                if not (field.store or field.inverse):
+                    _logger.warning("method %s.%s: @constrains parameter %r is not writeable", cls._name, attr, name)
             methods.append(func)
 
         # optimization: memoize result on cls, it will not be recomputed
@@ -702,12 +607,7 @@ class BaseModel(object):
     @api.model
     @ormcache()
     def _is_an_ordinary_table(self):
-        self.env.cr.execute("""\
-            SELECT  1
-            FROM    pg_class
-            WHERE   relname = %s
-            AND     relkind = %s""", [self._table, 'r'])
-        return bool(self.env.cr.fetchone())
+        return tools.table_kind(self.env.cr, self._table) == 'r'
 
     def __export_xml_id(self):
         """ Return a valid xml_id for the record ``self``. """
@@ -1243,8 +1143,9 @@ class BaseModel(object):
         """
 
         field = E.field(name=self._rec_name_fallback())
-        div = E.div(field, {'class': "oe_kanban_card oe_kanban_global_click"})
-        kanban_box = E.t(div, {'t-name': "kanban-box"})
+        content_div = E.div(field, {'class': "o_kanban_card_content"})
+        card_div = E.div(content_div, {'t-attf-class': "oe_kanban_card oe_kanban_global_click"})
+        kanban_box = E.t(card_div, {'t-name': "kanban-box"})
         templates = E.templates(kanban_box)
         return E.kanban(templates, string=self._description)
 
@@ -1333,23 +1234,8 @@ class BaseModel(object):
         return result
 
     @api.model
-    def fields_view_get(self, view_id=None, view_type='form', toolbar=False, submenu=False):
-        """ fields_view_get([view_id | view_type='form'])
-
-        Get the detailed composition of the requested view like fields, model, view architecture
-
-        :param view_id: id of the view or None
-        :param view_type: type of the view to return if view_id is None ('form', 'tree', ...)
-        :param toolbar: true to include contextual actions
-        :param submenu: deprecated
-        :return: dictionary describing the composition of the requested view (including inherited views and extensions)
-        :raise AttributeError:
-                            * if the inherited view has unknown position to work with other than 'before', 'after', 'inside', 'replace'
-                            * if some tag other than 'position' is found in parent view
-        :raise Invalid ArchitectureError: if there is view type other than form, tree, calendar, search etc defined on the structure
-        """
+    def _fields_view_get(self, view_id=None, view_type='form', toolbar=False, submenu=False):
         View = self.env['ir.ui.view']
-
         result = {
             'model': self._name,
             'field_parent': False,
@@ -1377,7 +1263,6 @@ class BaseModel(object):
                 # otherwise try to find the lowest priority matching ir.ui.view
                 view_id = View.default_view(self._name, view_type)
 
-        # context for post-processing might be overriden
         if view_id:
             # read the view with inherited views applied
             root_view = View.browse(view_id).read_combined(['id', 'name', 'field_parent', 'type', 'model', 'arch'])
@@ -1386,9 +1271,7 @@ class BaseModel(object):
             result['type'] = root_view['type']
             result['view_id'] = root_view['id']
             result['field_parent'] = root_view['field_parent']
-            # override context from postprocessing
-            if root_view['model'] != self._name:
-                View = View.with_context(base_model_name=root_view['model'])
+            result['base_model'] = root_view['model']
         else:
             # fallback on default views methods if no ir.ui.view could be found
             try:
@@ -1398,6 +1281,32 @@ class BaseModel(object):
                 result['name'] = 'default'
             except AttributeError:
                 raise UserError(_("No default view of type '%s' could be found !") % view_type)
+        return result
+
+    @api.model
+    def fields_view_get(self, view_id=None, view_type='form', toolbar=False, submenu=False):
+        """ fields_view_get([view_id | view_type='form'])
+
+        Get the detailed composition of the requested view like fields, model, view architecture
+
+        :param view_id: id of the view or None
+        :param view_type: type of the view to return if view_id is None ('form', 'tree', ...)
+        :param toolbar: true to include contextual actions
+        :param submenu: deprecated
+        :return: dictionary describing the composition of the requested view (including inherited views and extensions)
+        :raise AttributeError:
+                            * if the inherited view has unknown position to work with other than 'before', 'after', 'inside', 'replace'
+                            * if some tag other than 'position' is found in parent view
+        :raise Invalid ArchitectureError: if there is view type other than form, tree, calendar, search etc defined on the structure
+        """
+        View = self.env['ir.ui.view']
+
+        # Get the view arch and all other attributes describing the composition of the view
+        result = self._fields_view_get(view_id=view_id, view_type=view_type, toolbar=toolbar, submenu=submenu)
+
+        # Override context for postprocessing
+        if view_id and result.get('base_model', self._name) != self._name:
+            View = View.with_context(base_model_name=result['base_model'])
 
         # Apply post processing, groups and modifiers etc...
         xarch, xfields = View.postprocess_and_fields(self._name, etree.fromstring(result['arch']), view_id)
@@ -1987,7 +1896,7 @@ class BaseModel(object):
         prefix_term = lambda prefix, term: ('%s %s' % (prefix, term)) if term else ''
 
         query = """
-            SELECT min(%(table)s.id) AS id, count(%(table)s.id) AS %(count_field)s %(extra_fields)s
+            SELECT min("%(table)s".id) AS id, count("%(table)s".id) AS "%(count_field)s" %(extra_fields)s
             FROM %(from)s
             %(where)s
             %(groupby)s
@@ -2011,13 +1920,7 @@ class BaseModel(object):
         if not groupby_fields:
             return fetched_data
 
-        many2onefields = [gb['field'] for gb in annotated_groupbys if gb['type'] == 'many2one']
-        if many2onefields:
-            data_ids = [r['id'] for r in fetched_data]
-            many2onefields = list(set(many2onefields))
-            data_dict = {d['id']: d for d in self.browse(data_ids).read(many2onefields)}
-            for d in fetched_data:
-                d.update(data_dict[d['id']])
+        self._read_group_resolve_many2one_fields(fetched_data, annotated_groupbys)
 
         data = map(lambda r: {k: self._read_group_prepare_data(k,v, groupby_dict) for k,v in r.iteritems()}, fetched_data)
         result = [self._read_group_format_result(d, annotated_groupbys, groupby, domain) for d in data]
@@ -2031,6 +1934,15 @@ class BaseModel(object):
                 aggregated_fields, count_field, result, read_group_order=order,
             )
         return result
+
+    def _read_group_resolve_many2one_fields(self, data, fields):
+        many2onefields = {field['field'] for field in fields if field['type'] == 'many2one'}
+        for field in many2onefields:
+            ids_set = {d[field] for d in data}
+            m2o_records = self.env[self._fields[field].comodel_name].browse(ids_set)
+            data_dict = dict(m2o_records.name_get())
+            for d in data:
+                d[field] = (d[field], data_dict[d[field]]) if d[field] else False
 
     def _inherits_join_add(self, current_model, parent_model_name, query):
         """
@@ -2131,132 +2043,7 @@ class BaseModel(object):
                 _logger.debug("column %s is in the table %s but not in the corresponding object %s",
                               row['attname'], self._table, self._name)
             if row['attnotnull']:
-                cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" DROP NOT NULL' % (self._table, row['attname']))
-                _schema.debug("Table '%s': column '%s': dropped NOT NULL constraint",
-                              self._table, row['attname'])
-
-    @api.model_cr
-    def _save_constraint(self, constraint_name, type, definition, module):
-        """
-        Record the creation of a constraint for this model, to make it possible
-        to delete it later when the module is uninstalled. Type can be either
-        'f' or 'u' depending on the constraint being a foreign key or not.
-        """
-        if not module:
-            # no need to save constraints for custom models as they're not part
-            # of any module
-            return
-        assert type in ('f', 'u')
-        cr = self._cr
-        cr.execute("""
-            SELECT type, definition FROM ir_model_constraint, ir_module_module
-            WHERE ir_model_constraint.module=ir_module_module.id
-                AND ir_model_constraint.name=%s
-                AND ir_module_module.name=%s
-            """, (constraint_name, module))
-        constraints = cr.dictfetchone()
-        if not constraints:
-            cr.execute("""
-                INSERT INTO ir_model_constraint
-                    (name, date_init, date_update, module, model, type, definition)
-                VALUES (%s, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC',
-                    (SELECT id FROM ir_module_module WHERE name=%s),
-                    (SELECT id FROM ir_model WHERE model=%s), %s, %s)""",
-                    (constraint_name, module, self._name, type, definition))
-        elif constraints['type'] != type or (definition and constraints['definition'] != definition):
-            cr.execute("""
-                UPDATE ir_model_constraint
-                SET date_update=now() AT TIME ZONE 'UTC', type=%s, definition=%s
-                WHERE name=%s AND module = (SELECT id FROM ir_module_module WHERE name=%s)""",
-                    (type, definition, constraint_name, module))
-
-    @api.model_cr
-    def _drop_constraint(self, source_table, constraint_name):
-        self._cr.execute("ALTER TABLE %s DROP CONSTRAINT %s" % (source_table, constraint_name))
-
-    @api.model_cr
-    def _save_relation_table(self, relation_table, module):
-        """
-        Record the creation of a many2many for this model, to make it possible
-        to delete it later when the module is uninstalled.
-        """
-        cr = self._cr
-        cr.execute("""
-            SELECT 1 FROM ir_model_relation, ir_module_module
-            WHERE ir_model_relation.module=ir_module_module.id
-                AND ir_model_relation.name=%s
-                AND ir_module_module.name=%s
-            """, (relation_table, module))
-        if not cr.rowcount:
-            cr.execute("""INSERT INTO ir_model_relation (name, date_init, date_update, module, model)
-                                 VALUES (%s, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC',
-                    (SELECT id FROM ir_module_module WHERE name=%s),
-                    (SELECT id FROM ir_model WHERE model=%s))""",
-                       (relation_table, module, self._name))
-            self.invalidate_cache()
-
-    # checked version: for direct m2o starting from ``self``
-    def _m2o_add_foreign_key_checked(self, source_field, dest_model, ondelete):
-        assert self.is_transient() or not dest_model.is_transient(), \
-            'Many2One relationships from non-transient Model to TransientModel are forbidden'
-        if self.is_transient() and not dest_model.is_transient():
-            # TransientModel relationships to regular Models are annoying
-            # usually because they could block deletion due to the FKs.
-            # So unless stated otherwise we default them to ondelete=cascade.
-            ondelete = ondelete or 'cascade'
-        field = self._fields[source_field]
-        self._m2o_add_foreign_key_unchecked(self._table, source_field, dest_model, ondelete, field._module)
-
-    # unchecked version: for custom cases, such as m2m relationships
-    def _m2o_add_foreign_key_unchecked(self, source_table, source_field, dest_model, ondelete, module):
-        fk_def = (source_table, source_field, dest_model._table, ondelete or 'set null', module)
-        self._foreign_keys.add(fk_def)
-        _schema.debug("Table '%s': added foreign key '%s' with definition=REFERENCES \"%s\" ON DELETE %s", *fk_def[:-1])
-
-    @api.model_cr
-    def _m2o_fix_foreign_key(self, source_table, source_field, dest_model, ondelete):
-        # Find FK constraint(s) currently established for the m2o field,
-        # and see whether they are stale or not
-        query = """ SELECT confdeltype as ondelete_rule, conname as constraint_name,
-                           cl2.relname as foreign_table
-                      FROM pg_constraint as con, pg_class as cl1, pg_class as cl2,
-                           pg_attribute as att1, pg_attribute as att2
-                     WHERE con.conrelid = cl1.oid
-                       AND cl1.relname = %s
-                       AND con.confrelid = cl2.oid
-                       AND array_lower(con.conkey, 1) = 1
-                       AND con.conkey[1] = att1.attnum
-                       AND att1.attrelid = cl1.oid
-                       AND att1.attname = %s
-                       AND array_lower(con.confkey, 1) = 1
-                       AND con.confkey[1] = att2.attnum
-                       AND att2.attrelid = cl2.oid
-                       AND att2.attname = %s
-                       AND con.contype = 'f' """
-        self._cr.execute(query, (source_table, source_field, 'id'))
-        constraints = self._cr.dictfetchall()
-        if constraints:
-            if len(constraints) == 1:
-                # Is it the right constraint?
-                cons, = constraints
-                if cons['ondelete_rule'] != POSTGRES_CONFDELTYPES.get((ondelete or 'set null').upper(), 'a')\
-                    or cons['foreign_table'] != dest_model._table:
-                    # Wrong FK: drop it and recreate
-                    _schema.debug("Table '%s': dropping obsolete FK constraint: '%s'",
-                                  source_table, cons['constraint_name'])
-                    self._drop_constraint(source_table, cons['constraint_name'])
-                else:
-                    # it's all good, nothing to do!
-                    return
-            else:
-                # Multiple FKs found for the same field, drop them all, and re-create
-                for cons in constraints:
-                    _schema.debug("Table '%s': dropping duplicate FK constraints: '%s'",
-                                  source_table, cons['constraint_name'])
-                    self._drop_constraint(source_table, cons['constraint_name'])
-
-        # (re-)create the FK
-        self._m2o_add_foreign_key_checked(source_field, dest_model, ondelete)
+                tools.drop_not_null(cr, self._table, row['attname'])
 
     @api.model_cr_context
     def _init_column(self, column_name):
@@ -2281,30 +2068,33 @@ class BaseModel(object):
             query = 'UPDATE "%s" SET "%s"=%s WHERE "%s" IS NULL' % (
                 self._table, column_name, field.column_format, column_name)
             self._cr.execute(query, (value,))
-            # this is a disgrace
-            self._cr.commit()
+
+    @ormcache()
+    def _table_has_rows(self):
+        """ Return whether the model's table has rows. This method should only
+            be used when updating the database schema (:meth:`~._auto_init`).
+        """
+        self.env.cr.execute('SELECT 1 FROM "%s" LIMIT 1' % self._table)
+        return self.env.cr.rowcount
 
     @api.model_cr_context
     def _auto_init(self):
-        """ Reflect the model and initialize the database schema of ``self``:
-        - create the corresponding table in database,
-        - add the parent columns in database,
-        - add the '_log_access' columns if required,
-        - report on database columns no more existing in ``self._fields``,
-        - remove no more existing not null constraints,
-        - alter existing database columns to match ``self._fields``,
-        - create database tables to match ``self._fields``,
-        - add database indices to match ``self._fields``,
-        - save in self._foreign_keys a list a foreign keys to create (see
-          _auto_end).
+        """ Initialize the database schema of ``self``:
+            - create the corresponding table,
+            - create/update the necessary columns/tables for fields,
+            - initialize new columns on existing rows,
+            - add the SQL constraints given on the model,
+            - add the indexes on indexed fields,
 
-        Note: you should not override this method. Instead, you can modify the
-        model's database schema by overriding method :meth:`~.init`, which is
-        called right after this one.
+            Also prepare post-init stuff to:
+            - add foreign key constraints,
+            - reflect models, fields, relations and constraints,
+            - mark fields to recompute on existing records.
+
+            Note: you should not override this method. Instead, you can modify
+            the model's database schema by overriding method :meth:`~.init`,
+            which is called right after this one.
         """
-        assert 'todo' in self._context, "Context not passed correctly to method _auto_init()."
-
-        type(self)._foreign_keys = set()
         raise_on_invalid_object_name(self._name)
 
         # This prevents anything called by this method (in particular default
@@ -2312,259 +2102,51 @@ class BaseModel(object):
         # has not been added in database yet!
         self = self.with_context(prefetch_fields=False)
 
+        self.pool.post_init(self._reflect)
+
         cr = self._cr
         parent_store_compute = False
-        stored_fields = []              # new-style stored fields with compute
-        todo_end = self._context['todo']
         update_custom_fields = self._context.get('update_custom_fields', False)
-        self._field_create()
-        create = not self._table_exist()
+        must_create_table = not tools.table_exists(cr, self._table)
 
         if self._auto:
+            if must_create_table:
+                tools.create_model_table(cr, self._table, self._description)
 
-            if create:
-                self._create_table()
-                has_rows = False
-            else:
-                cr.execute('SELECT 1 FROM "%s" LIMIT 1' % self._table)
-                has_rows = cr.rowcount
-
-            cr.commit()
             if self._parent_store:
-                if not self._parent_columns_exist():
+                if not tools.column_exists(cr, self._table, 'parent_left'):
                     self._create_parent_columns()
                     parent_store_compute = True
 
             self._check_removed_columns(log=False)
 
-            # retrieve existing database columns
-            column_data = self._select_column_data()
+            # update the database schema for fields
+            columns = tools.table_columns(cr, self._table)
 
-            for name, field in self._fields.iteritems():
-                if name == 'id':
-                    continue
+            def recompute(field):
+                _logger.info("Storing computed values of %s", field)
+                recs = self.with_context(active_test=False).search([])
+                recs._recompute_todo(field)
 
+            for field in self._fields.itervalues():
                 if not field.store:
                     continue
 
                 if field.manual and not update_custom_fields:
-                    # Don't update custom (also called manual) fields
-                    continue
+                    continue            # don't update custom fields
 
-                if not field.column_type:
-                    # the field is not stored as a column
-                    if field.check_schema(self) and field.compute:
-                        stored_fields.append(field)
-
-                else:
-                    res = column_data.get(name)
-
-                    # The column is not found as-is in database. Check whether
-                    # it exists with an old name, and rename it.
-                    if not res and hasattr(field, 'oldname'):
-                        res = column_data.get(field.oldname)
-                        if res:
-                            cr.execute('ALTER TABLE "%s" RENAME "%s" TO "%s"' % (self._table, field.oldname, name))
-                            res['attname'] = name
-                            _schema.debug("Table '%s': renamed column '%s' to '%s'", self._table, field.oldname, name)
-
-                    # The column already exists in database. Possibly change its
-                    # type, rename it, drop it or change its constraints.
-                    if res:
-                        f_pg_type = res['typname']
-                        f_pg_size = res['size']
-                        f_pg_notnull = res['attnotnull']
-                        column_type = field.column_type
-
-                        if column_type:
-                            converted = False
-                            casts = [
-                                ('text', 'char', column_type[1], '::' + column_type[1]),
-                                ('varchar', 'text', 'TEXT', ''),
-                                ('int4', 'float', column_type[1], '::' + column_type[1]),
-                                ('date', 'datetime', 'TIMESTAMP', '::TIMESTAMP'),
-                                ('timestamp', 'date', 'date', '::date'),
-                                ('numeric', 'float', column_type[1], '::' + column_type[1]),
-                                ('float8', 'float', column_type[1], '::' + column_type[1]),
-                                ('float8', 'monetary', column_type[1], '::' + column_type[1]),
-                            ]
-                            if f_pg_type == 'varchar' and field.type == 'char' and f_pg_size and (field.size is None or f_pg_size < field.size):
-                                try:
-                                    with cr.savepoint():
-                                        cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" TYPE %s' % (self._table, name, column_type[1]), log_exceptions=False)
-                                except psycopg2.NotSupportedError:
-                                    # In place alter table cannot be done because a view is depending of this field.
-                                    # Do a manual copy. This will drop the view (that will be recreated later)
-                                    cr.execute('ALTER TABLE "%s" RENAME COLUMN "%s" TO temp_change_size' % (self._table, name))
-                                    cr.execute('ALTER TABLE "%s" ADD COLUMN "%s" %s' % (self._table, name, column_type[1]))
-                                    cr.execute('UPDATE "%s" SET "%s"=temp_change_size::%s' % (self._table, name, column_type[1]))
-                                    cr.execute('ALTER TABLE "%s" DROP COLUMN temp_change_size CASCADE' % (self._table,))
-                                cr.commit()
-                                _schema.debug("Table '%s': column '%s' (type varchar) changed size from %s to %s",
-                                              self._table, name, f_pg_size or 'unlimited', field.size or 'unlimited')
-                            for c in casts:
-                                if (f_pg_type == c[0]) and (field.type == c[1]):
-                                    if f_pg_type != column_type[0]:
-                                        converted = True
-                                        try:
-                                            with cr.savepoint():
-                                                cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" TYPE %s' % (self._table, name, c[2]), log_exceptions=False)
-                                        except psycopg2.NotSupportedError:
-                                            # can't do inplace change -> use a casted temp column
-                                            cr.execute('ALTER TABLE "%s" RENAME COLUMN "%s" TO __temp_type_cast' % (self._table, name))
-                                            cr.execute('ALTER TABLE "%s" ADD COLUMN "%s" %s' % (self._table, name, c[2]))
-                                            cr.execute('UPDATE "%s" SET "%s"= __temp_type_cast%s' % (self._table, name, c[3]))
-                                            cr.execute('ALTER TABLE "%s" DROP COLUMN  __temp_type_cast CASCADE' % (self._table,))
-                                        cr.commit()
-                                        _schema.debug("Table '%s': column '%s' changed type from %s to %s",
-                                                      self._table, name, c[0], c[1])
-                                    break
-
-                            if f_pg_type != column_type[0]:
-                                if not converted:
-                                    i = 0
-                                    while True:
-                                        newname = name + '_moved' + str(i)
-                                        cr.execute("SELECT count(1) FROM pg_class c,pg_attribute a " \
-                                            "WHERE c.relname=%s " \
-                                            "AND a.attname=%s " \
-                                            "AND c.oid=a.attrelid ", (self._table, newname))
-                                        if not cr.fetchone()[0]:
-                                            break
-                                        i += 1
-                                    if f_pg_notnull:
-                                        cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" DROP NOT NULL' % (self._table, name))
-                                    cr.execute('ALTER TABLE "%s" RENAME COLUMN "%s" TO "%s"' % (self._table, name, newname))
-                                    cr.execute('ALTER TABLE "%s" ADD COLUMN "%s" %s' % (self._table, name, column_type[1]))
-                                    cr.execute("COMMENT ON COLUMN %s.\"%s\" IS %%s" % (self._table, name), (field.string,))
-                                    _schema.warning("Table `%s`: column `%s` has changed type (DB=%s, def=%s), data moved to column `%s`",
-                                                    self._table, name, f_pg_type, field.type, newname)
-
-                            # if the field is required and hasn't got a NOT NULL constraint
-                            if field.required and f_pg_notnull == 0:
-                                if has_rows:
-                                    self._init_column(name)
-                                # add the NOT NULL constraint
-                                try:
-                                    cr.commit()
-                                    cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" SET NOT NULL' % (self._table, name), log_exceptions=False)
-                                    _schema.debug("Table '%s': column '%s': added NOT NULL constraint",
-                                                  self._table, name)
-                                except Exception:
-                                    msg = "Table '%s': unable to set a NOT NULL constraint on column '%s' !\n"\
-                                        "If you want to have it, you should update the records and execute manually:\n"\
-                                        "ALTER TABLE %s ALTER COLUMN %s SET NOT NULL"
-                                    _schema.warning(msg, self._table, name, self._table, name)
-                                cr.commit()
-                            elif not field.required and f_pg_notnull == 1:
-                                cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" DROP NOT NULL' % (self._table, name))
-                                cr.commit()
-                                _schema.debug("Table '%s': column '%s': dropped NOT NULL constraint",
-                                              self._table, name)
-                            # Verify index
-                            indexname = '%s_%s_index' % (self._table, name)
-                            cr.execute("SELECT indexname FROM pg_indexes WHERE indexname = %s and tablename = %s", (indexname, self._table))
-                            res2 = cr.dictfetchall()
-                            if not res2 and field.index:
-                                cr.execute('CREATE INDEX "%s_%s_index" ON "%s" ("%s")' % (self._table, name, self._table, name))
-                                cr.commit()
-                                if field.type == 'text':
-                                    # FIXME: for fields.text columns we should try creating GIN indexes instead (seems most suitable for an ERP context)
-                                    msg = "Table '%s': Adding (b-tree) index for %s column '%s'."\
-                                        "This is probably useless (does not work for fulltext search) and prevents INSERTs of long texts"\
-                                        " because there is a length limit for indexable btree values!\n"\
-                                        "Use a search view instead if you simply want to make the field searchable."
-                                    _schema.warning(msg, self._table, field.type, name)
-                            if res2 and not field.index:
-                                cr.execute('DROP INDEX "%s_%s_index"' % (self._table, name))
-                                cr.commit()
-                                msg = "Table '%s': dropping index for column '%s' of type '%s' as it is not required anymore"
-                                _schema.debug(msg, self._table, name, field.type)
-
-                            if field.type == 'many2one':
-                                comodel = self.env[field.comodel_name]
-                                if comodel._auto and comodel._table != 'ir_actions':
-                                    self._m2o_fix_foreign_key(self._table, name, comodel, field.ondelete)
-
-                    else:
-                        # the column doesn't exist in database, create it
-                        cr.execute('ALTER TABLE "%s" ADD COLUMN "%s" %s' % (self._table, name, field.column_type[1]))
-                        cr.execute("COMMENT ON COLUMN %s.\"%s\" IS %%s" % (self._table, name), (field.string,))
-                        _schema.debug("Table '%s': added column '%s' with definition=%s",
-                                      self._table, name, field.column_type[1])
-
-                        # initialize it
-                        if has_rows:
-                            self._init_column(name)
-
-                        # remember new-style stored fields with compute method
-                        if field.compute:
-                            stored_fields.append(field)
-
-                        # and add constraints if needed
-                        if field.type == 'many2one' and field.store:
-                            if field.comodel_name not in self.env:
-                                raise ValueError(_('There is no reference available for %s') % (field.comodel_name,))
-                            comodel = self.env[field.comodel_name]
-                            # ir_actions is inherited so foreign key doesn't work on it
-                            if comodel._auto and comodel._table != 'ir_actions':
-                                self._m2o_add_foreign_key_checked(name, comodel, field.ondelete)
-                        if field.index:
-                            cr.execute('CREATE INDEX "%s_%s_index" ON "%s" ("%s")' % (self._table, name, self._table, name))
-                        if field.required:
-                            try:
-                                cr.commit()
-                                cr.execute('ALTER TABLE "%s" ALTER COLUMN "%s" SET NOT NULL' % (self._table, name))
-                                _schema.debug("Table '%s': column '%s': added a NOT NULL constraint",
-                                              self._table, name)
-                            except Exception:
-                                msg = "WARNING: unable to set column %s of table %s not null !\n"\
-                                    "Try to re-run: openerp-server --update=module\n"\
-                                    "If it doesn't work, update records and execute manually:\n"\
-                                    "ALTER TABLE %s ALTER COLUMN %s SET NOT NULL"
-                                _logger.warning(msg, name, self._table, self._table, name, exc_info=True)
-                        cr.commit()
-
-        else:
-            cr.execute("SELECT relname FROM pg_class WHERE relkind IN ('r','v') AND relname=%s", (self._table,))
-            create = not bool(cr.fetchone())
-
-        cr.commit()     # start a new transaction
+                new = field.update_db(self, columns)
+                if new and field.compute:
+                    self.pool.post_init(recompute, field)
 
         if self._auto:
             self._add_sql_constraints()
 
-        if create:
+        if must_create_table:
             self._execute_sql()
 
         if parent_store_compute:
             self._parent_store_compute()
-            cr.commit()
-
-        if stored_fields:
-            # trigger computation of new-style stored fields with a compute
-            def func():
-                fnames = [f.name for f in stored_fields]
-                _logger.info("Storing computed values of %s fields %s",
-                             self._name, ', '.join(sorted(fnames)))
-                recs = self.with_context(active_test=False).search([])
-                if recs:
-                    recs.invalidate_cache(fnames, recs.ids)
-                    for f in stored_fields:
-                        recs._recompute_todo(f)
-
-            todo_end.append((1000, func, ()))
-
-    @api.model_cr_context
-    def _auto_end(self):
-        """ Create the foreign keys recorded by _auto_init. """
-        cr = self._cr
-        query = 'ALTER TABLE "%s" ADD FOREIGN KEY ("%s") REFERENCES "%s" ON DELETE %s'
-        for table1, column, table2, ondelete, module in self._foreign_keys:
-            cr.execute(query % (table1, column, table2, ondelete))
-            self._save_constraint("%s_%s_fkey" % (table1, column), 'f', False, module)
-        cr.commit()
-        del type(self)._foreign_keys
 
     @api.model_cr
     def init(self):
@@ -2574,53 +2156,19 @@ class BaseModel(object):
         pass
 
     @api.model_cr
-    def _table_exist(self):
-        query = "SELECT relname FROM pg_class WHERE relkind IN ('r','v') AND relname=%s"
-        self._cr.execute(query, (self._table,))
-        return self._cr.rowcount
-
-    @api.model_cr
-    def _create_table(self):
-        self._cr.execute('CREATE TABLE "%s" (id SERIAL NOT NULL, PRIMARY KEY(id))' % (self._table,))
-        self._cr.execute("COMMENT ON TABLE \"%s\" IS %%s" % self._table, (self._description,))
-        _schema.debug("Table '%s': created", self._table)
-
-    @api.model_cr
-    def _parent_columns_exist(self):
-        query = """ SELECT c.relname FROM pg_class c, pg_attribute a
-                    WHERE c.relname=%s AND a.attname=%s AND c.oid=a.attrelid """
-        self._cr.execute(query, (self._table, 'parent_left'))
-        return self._cr.rowcount
-
-    @api.model_cr
     def _create_parent_columns(self):
-        self._cr.execute('ALTER TABLE "%s" ADD COLUMN "parent_left" INTEGER' % (self._table,))
-        self._cr.execute('ALTER TABLE "%s" ADD COLUMN "parent_right" INTEGER' % (self._table,))
+        tools.create_column(self._cr, self._table, 'parent_left', 'INTEGER')
+        tools.create_column(self._cr, self._table, 'parent_right', 'INTEGER')
         if 'parent_left' not in self._fields:
             _logger.error("add a field parent_left on model %s: parent_left = fields.Integer('Left Parent', index=True)", self._name)
-            _schema.debug("Table '%s': added column '%s' with definition=%s", self._table, 'parent_left', 'INTEGER')
         elif not self._fields['parent_left'].index:
             _logger.error('parent_left field on model %s must be indexed! Add index=True to the field definition)', self._name)
         if 'parent_right' not in self._fields:
             _logger.error("add a field parent_right on model %s: parent_right = fields.Integer('Left Parent', index=True)", self._name)
-            _schema.debug("Table '%s': added column '%s' with definition=%s", self._table, 'parent_right', 'INTEGER')
         elif not self._fields['parent_right'].index:
             _logger.error("parent_right field on model %s must be indexed! Add index=True to the field definition)", self._name)
         if self._fields[self._parent_name].ondelete not in ('cascade', 'restrict'):
             _logger.error("The field %s on model %s must be set as ondelete='cascade' or 'restrict'", self._parent_name, self._name)
-        self._cr.commit()
-
-    @api.model_cr
-    def _select_column_data(self):
-        # attlen is the number of bytes necessary to represent the type when
-        # the type has a fixed size. If the type has a varying size attlen is
-        # -1 and atttypmod is the size limit + 4, or -1 if there is no limit.
-        query = """ SELECT c.relname, a.attname, a.attlen, a.atttypmod, a.attnotnull, a.atthasdef, t.typname,
-                           CASE WHEN a.attlen=-1 THEN (CASE WHEN a.atttypmod=-1 THEN 0 ELSE a.atttypmod-4 END) ELSE a.attlen END as size
-                    FROM pg_class c, pg_attribute a, pg_type t
-                    WHERE c.relname=%s AND c.oid=a.attrelid AND a.atttypid=t.oid """
-        self._cr.execute(query, (self._table,))
-        return {row['attname']: row for row in self._cr.dictfetchall()}
 
     @api.model_cr
     def _add_sql_constraints(self):
@@ -2631,70 +2179,33 @@ class BaseModel(object):
 
         """
         cr = self._cr
+        foreign_key_re = re.compile(r'\s*foreign\s+key\b.*', re.I)
 
-        def unify_cons_text(txt):
+        def cons_text(txt):
             return txt.lower().replace(', ',',').replace(' (','(')
 
-        def drop(name, definition, old_definition):
-            try:
-                cr.execute('ALTER TABLE "%s" DROP CONSTRAINT "%s"' % (self._table, name))
-                cr.commit()
-                _schema.debug("Table '%s': dropped constraint '%s'. Reason: its definition changed from '%s' to '%s'",
-                              self._table, name, old_definition, definition)
-            except Exception:
-                _schema.warning("Table '%s': unable to drop constraint '%s'!", self._table, definition)
-                cr.rollback()
-
-        def add(name, definition):
-            query = 'ALTER TABLE "%s" ADD CONSTRAINT "%s" %s' % (self._table, name, definition)
-            try:
-                cr.execute(query)
-                cr.commit()
-                _schema.debug("Table '%s': added constraint '%s' with definition=%s",
-                              self._table, name, definition)
-            except Exception:
-                _schema.warning("Table '%s': unable to add constraint '%s'!\n"
-                                "If you want to have it, you should update the records and execute manually:\n%s",
-                                self._table, definition, query)
-                cr.rollback()
-
-        # map each constraint on the name of the module where it is defined
-        constraint_module = {
-            constraint[0]: cls._module
-            for cls in reversed(type(self).mro())
-            if not getattr(cls, 'pool', None)
-            for constraint in getattr(cls, '_local_sql_constraints', ())
-        }
+        def process(key, definition):
+            conname = '%s_%s' % (self._table, key)
+            has_definition = tools.constraint_definition(cr, conname)
+            if not has_definition:
+                # constraint does not exists
+                tools.add_constraint(cr, self._table, conname, definition)
+            elif cons_text(definition) != cons_text(has_definition):
+                # constraint exists but its definition may have changed
+                tools.drop_constraint(cr, self._table, conname)
+                tools.add_constraint(cr, self._table, conname, definition)
 
         for (key, definition, _) in self._sql_constraints:
-            conname = '%s_%s' % (self._table, key)
-
-            # using 1 to get result if no imc but one pgc
-            cr.execute("""SELECT definition, 1
-                          FROM ir_model_constraint imc
-                          RIGHT JOIN pg_constraint pgc
-                          ON (pgc.conname = imc.name)
-                          WHERE pgc.conname=%s
-                          """, (conname, ))
-            existing = cr.dictfetchone()
-            if not existing:
-                # constraint does not exists
-                add(conname, definition)
-            elif unify_cons_text(definition) != existing['definition']:
-                # constraint exists but its definition has changed
-                drop(conname, definition, existing['definition'] or '')
-                add(conname, definition)
-
-            # we need to add the constraint:
-            module = constraint_module.get(key)
-            self._save_constraint(conname, 'u', unify_cons_text(definition), module)
+            if foreign_key_re.match(definition):
+                self.pool.post_init(process, key, definition)
+            else:
+                process(key, definition)
 
     @api.model_cr
     def _execute_sql(self):
         """ Execute the SQL code from the _sql attribute (if any)."""
         if hasattr(self, "_sql"):
             self._cr.execute(self._sql)
-            self._cr.commit()
 
     #
     # Update objects that uses this one to update their _inherits fields
@@ -2849,6 +2360,11 @@ class BaseModel(object):
             if field.compute:
                 cls._field_computed[field] = group = groups[field.compute]
                 group.append(field)
+        for fields in groups.itervalues():
+            compute_sudo = fields[0].compute_sudo
+            if not all(field.compute_sudo == compute_sudo for field in fields):
+                _logger.warning("%s: inconsistent 'compute_sudo' for computed fields: %s",
+                                self._name, ", ".join(field.name for field in fields))
 
     @api.model
     def _setup_complete(self):
@@ -3168,6 +2684,9 @@ class BaseModel(object):
                     _('The requested operation cannot be completed due to security restrictions. Please contact your system administrator.\n\n(Document type: %s, Operation: %s)') % \
                     (self._name, 'read')
                 )
+                _logger.info(
+                    _('The requested operation cannot be completed due to record rules: Document type: %s, Operation: %s, Records: %s, User: %s') % \
+                    (self._name, 'read', ','.join([str(r.id) for r in self][:6]), self._uid))
                 forbidden._cache.update(FailedValue(exc))
 
     @api.multi
@@ -3303,51 +2822,6 @@ class BaseModel(object):
                     self.browse(sub_ids)._check_record_rules_result_count(returned_ids, operation)
 
     @api.multi
-    def create_workflow(self):
-        """ Create a workflow instance for the given records. """
-        from odoo import workflow
-        for res_id in self.ids:
-            workflow.trg_create(self._uid, self._name, res_id, self._cr)
-        return True
-
-    @api.multi
-    def delete_workflow(self):
-        """ Delete the workflow instances bound to the given records. """
-        from odoo import workflow
-        for res_id in self.ids:
-            workflow.trg_delete(self._uid, self._name, res_id, self._cr)
-        self.invalidate_cache()
-        return True
-
-    @api.multi
-    def step_workflow(self):
-        """ Reevaluate the workflow instances of the given records. """
-        from odoo import workflow
-        for res_id in self.ids:
-            workflow.trg_write(self._uid, self._name, res_id, self._cr)
-        return True
-
-    @api.multi
-    def signal_workflow(self, signal):
-        """ Send the workflow signal, and return a dict mapping ids to workflow results. """
-        from odoo import workflow
-        result = {}
-        for res_id in self.ids:
-            result[res_id] = workflow.trg_validate(self._uid, self._name, res_id, signal, self._cr)
-        return result
-
-    @api.model
-    def redirect_workflow(self, old_new_ids):
-        """ Rebind the workflow instance bound to the given 'old' record IDs to
-            the given 'new' IDs. (``old_new_ids`` is a list of pairs ``(old, new)``.
-        """
-        from odoo import workflow
-        for old_id, new_id in old_new_ids:
-            workflow.trg_redirect(self._uid, self._name, old_id, new_id, self._cr)
-        self.invalidate_cache()
-        return True
-
-    @api.multi
     def unlink(self):
         """ unlink()
 
@@ -3375,8 +2849,6 @@ class BaseModel(object):
 
         # Delete the records' properties.
         self.env['ir.property'].search([('res_id', 'in', refs)]).unlink()
-
-        self.delete_workflow()
 
         self.check_access_rule('unlink')
 
@@ -3550,6 +3022,8 @@ class BaseModel(object):
                     record._cache.update(record._convert_to_cache(new_vals, update=True))
                 for key in new_vals:
                     self._fields[key].determine_inverse(self)
+                # check Python constraints for inversed fields
+                self._validate_fields(set(new_vals) - set(old_vals))
 
         return True
 
@@ -3750,7 +3224,6 @@ class BaseModel(object):
         if self.env.recompute and self._context.get('recompute', True):
             self.recompute()
 
-        self.step_workflow()
         return True
 
     #
@@ -3809,6 +3282,8 @@ class BaseModel(object):
         with self.env.protecting(protected_fields, record):
             for key in new_vals:
                 self._fields[key].determine_inverse(record)
+            # check Python constraints for inversed fields
+            record._validate_fields(set(new_vals) - set(old_vals))
 
         return record
 
@@ -3964,7 +3439,6 @@ class BaseModel(object):
                 self.recompute()
 
         self.check_access_rule('create')
-        self.create_workflow()
         return id_new
 
     # TODO: ameliorer avec NULL
@@ -4467,7 +3941,7 @@ class BaseModel(object):
         """
         result = {record.id: [] for record in self}
         domain = [('model', '=', self._name), ('res_id', 'in', self.ids)]
-        for data in self.env['ir.model.data'].search_read(domain, ['module', 'name', 'res_id']):
+        for data in self.env['ir.model.data'].sudo().search_read(domain, ['module', 'name', 'res_id']):
             result[data['res_id']].append('%(module)s.%(name)s' % data)
         return result
 

@@ -6,6 +6,7 @@ import mail_alias
 import mail_followers
 import mail_notification
 import mail_message
+import mail_activity
 import mail_mail
 import mail_thread
 import mail_channel
@@ -17,4 +18,5 @@ import res_config
 import update
 import ir_actions
 import ir_autovacuum
+import ir_model
 import html2text

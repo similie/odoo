@@ -21,7 +21,7 @@
                     <group  expand="1" string="Group By">
                         <filter string="Salesperson" name="user"
                             context="{'group_by':'user_id'}" />
-                        <filter string="Sales Team" context="{'group_by':'team_id'}"/>
+                        <filter string="Sales Channel" context="{'group_by':'team_id'}"/>
                         <filter string="Country" context="{'group_by':'country_id'}" />
                         <filter string="Company" context="{'group_by':'company_id'}" />
                         <separator/>
@@ -70,6 +70,6 @@
         </record>
 
        <menuitem id="menu_report_crm_opportunities_assign_tree"
-           parent="sales_team.menu_sale_report" action="action_report_crm_opportunity_assign" sequence="20"/>
+           parent="sales_team.menu_sale_report" name="Opp. Assignment" action="action_report_crm_opportunity_assign" sequence="3"/>
 
 </odoo>

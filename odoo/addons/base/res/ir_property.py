@@ -79,7 +79,7 @@ class Property(models.Model):
                 else:
                     field_id = self.env['ir.model.fields'].browse(field_id)
 
-                value = '%s,%d' % (field_id.relation, value)
+                value = '%s,%d' % (field_id.sudo().relation, value)
 
         values[field] = value
         return values
@@ -265,13 +265,13 @@ class Property(models.Model):
             elif value <= 0 and operator == '>=':
                 operator = '<'
                 include_zero = True
-            elif value <= 0 and operator == '>':
+            elif value < 0 and operator == '>':
                 operator = '<='
                 include_zero = True
             elif value >= 0 and operator == '<=':
                 operator = '>'
                 include_zero = True
-            elif value >= 0 and operator == '<':
+            elif value > 0 and operator == '<':
                 operator = '>='
                 include_zero = True
 

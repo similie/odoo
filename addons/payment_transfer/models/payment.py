@@ -21,17 +21,17 @@ class TransferPaymentAcquirer(models.Model):
     def _format_transfer_data(self):
         company_id = self.env.user.company_id.id
         # filter only bank accounts marked as visible
-        journals = self.env['account.journal'].search([('type', '=', 'bank'), ('display_on_footer', '=', True), ('company_id', '=', company_id)])
+        journals = self.env['account.journal'].search([('type', '=', 'bank'), ('use_in_payment', '=', True), ('company_id', '=', company_id)])
         accounts = journals.mapped('bank_account_id').name_get()
         bank_title = _('Bank Accounts') if len(accounts) > 1 else _('Bank Account')
         bank_accounts = ''.join(['<ul>'] + ['<li>%s</li>' % name for id, name in accounts] + ['</ul>'])
-        post_msg = '''<div>
+        post_msg = _('''<div>
 <h3>Please use the following transfer details</h3>
 <h4>%(bank_title)s</h4>
 %(bank_accounts)s
 <h4>Communication</h4>
 <p>Please use the order name as communication reference.</p>
-</div>''' % {
+</div>''') % {
             'bank_title': bank_title,
             'bank_accounts': bank_accounts,
         }

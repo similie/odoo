@@ -13,7 +13,7 @@ OPERATORS = {
     '>': py_operator.gt,
     '<=': py_operator.le,
     '>=': py_operator.ge,
-    '==': py_operator.eq,
+    '=': py_operator.eq,
     '!=': py_operator.ne
 }
 
@@ -260,9 +260,6 @@ class Product(models.Model):
         if not isinstance(value, (float, int)):
             raise UserError('Invalid domain right operand')
 
-        if operator == '=':
-            operator = '=='
-
         # TODO: Still optimization possible when searching virtual quantities
         ids = []
         for product in self.search([]):
@@ -272,7 +269,7 @@ class Product(models.Model):
 
     def _search_qty_available(self, operator, value):
         # TDE FIXME: should probably clean the search methods
-        if value == 0.0 and operator in ('==', '>=', '<='):
+        if value == 0.0 and operator in ('=', '>=', '<='):
             return self._search_product_quantity(operator, value, 'qty_available')
         product_ids = self._search_qty_available_new(operator, value, self._context.get('lot_id'), self._context.get('owner_id'), self._context.get('package_id'))
         return [('id', 'in', product_ids)]
@@ -392,6 +389,8 @@ class ProductTemplate(models.Model):
         ('lot', 'By Lots'),
         ('none', 'No Tracking')], string="Tracking", default='none', required=True)
     description_picking = fields.Text('Description on Picking', translate=True)
+    description_pickingout = fields.Text('Description on Delivery Orders', translate=True)
+    description_pickingin = fields.Text('Description on Receptions', translate=True)
     qty_available = fields.Float(
         'Quantity On Hand', compute='_compute_quantities', search='_search_qty_available',
         digits=dp.get_precision('Product Unit of Measure'))

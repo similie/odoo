@@ -37,7 +37,7 @@ class ProductTemplate(models.Model):
     description_sale = fields.Text(
         'Sale Description', translate=True,
         help="A description of the Product that you want to communicate to your customers. "
-             "This description will be copied to every Sale Order, Delivery Order and Customer Invoice/Refund")
+             "This description will be copied to every Sales Order, Delivery Order and Customer Invoice/Refund")
     type = fields.Selection([
         ('consu', _('Consumable')),
         ('service', _('Service'))], string='Product Type', default='consu', required=True,
@@ -100,9 +100,8 @@ class ProductTemplate(models.Model):
         'res.company', 'Company',
         default=lambda self: self.env['res.company']._company_default_get('product.template'), index=1)
     packaging_ids = fields.One2many(
-        'product.packaging', 'product_tmpl_id', 'Logistical Units',
-        help="Gives the different ways to package the same product. This has no impact on "
-             "the picking order and is mainly used if you use the EDI module.")
+        'product.packaging', string="Packaging", compute="_compute_packaging_ids", inverse="_set_packaging_ids",
+        help="Gives the different ways to package the same product.")
     seller_ids = fields.One2many('product.supplierinfo', 'product_tmpl_id', 'Vendors')
 
     active = fields.Boolean('Active', default=True, help="If unchecked, it will allow you to hide the product without removing it.")
@@ -151,7 +150,7 @@ class ProductTemplate(models.Model):
         except ValueError:
             main_company = self.env['res.company'].sudo().search([], limit=1, order="id")
         for template in self:
-            template.currency_id = template.company_id.currency_id.id or main_company.currency_id.id
+            template.currency_id = template.company_id.sudo().currency_id.id or main_company.currency_id.id
 
     @api.multi
     def _compute_template_price(self):
@@ -160,7 +159,7 @@ class ProductTemplate(models.Model):
         if pricelist_id_or_name:
             pricelist = None
             partner = self._context.get('partner')
-            quantity = self._context.get('quantity')
+            quantity = self._context.get('quantity', 1.0)
 
             # Support context pricelists specified as display_name or ID for compatibility
             if isinstance(pricelist_id_or_name, basestring):
@@ -246,6 +245,17 @@ class ProductTemplate(models.Model):
         if len(self.product_variant_ids) == 1:
             self.product_variant_ids.default_code = self.default_code
 
+    @api.depends('product_variant_ids', 'product_variant_ids.packaging_ids')
+    def _compute_packaging_ids(self):
+        for p in self:
+            if len(p.product_variant_ids) == 1:
+                p.packaging_ids = p.product_variant_ids.packaging_ids
+
+    def _set_packaging_ids(self):
+        for p in self:
+            if len(p.product_variant_ids) == 1:
+                p.product_variant_ids.packaging_ids = p.packaging_ids
+
     @api.constrains('categ_id')
     def _check_category(self):
         if self.categ_id.type == 'view':
@@ -327,7 +337,7 @@ class ProductTemplate(models.Model):
             products_ns = Product.name_search(name, args+domain, operator=operator)
             products = Product.browse([x[0] for x in products_ns])
             templates |= products.mapped('product_tmpl_id')
-            if (not products) or (len(templates) > limit):
+            if (not products) or (limit and (len(templates) > limit)):
                 break
 
         # re-apply product.template order + name_get

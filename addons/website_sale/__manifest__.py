@@ -12,10 +12,13 @@ Odoo E-Commerce
         """,
     'depends': ['website', 'sale', 'payment', 'website_payment', 'website_portal_sale', 'website_mail', 'website_form', 'rating'],
     'data': [
+        'security/ir.model.access.csv',
+        'security/website_sale.xml',
         'data/data.xml',
         'data/web_planner_data.xml',
         'views/views.xml',
         'views/backend.xml',
+        'views/crm_team_views.xml',
         'views/templates.xml',
         'views/payment.xml',
         'views/product_attribute_views.xml',
@@ -23,8 +26,6 @@ Odoo E-Commerce
         'views/snippets.xml',
         'views/report_shop_saleorder.xml',
         'views/res_config_view.xml',
-        'security/ir.model.access.csv',
-        'security/website_sale.xml',
     ],
     'demo': [
         'data/demo.xml',

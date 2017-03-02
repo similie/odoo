@@ -86,7 +86,7 @@ class ModuleCategory(models.Model):
     def _compute_xml_id(self):
         xml_ids = defaultdict(list)
         domain = [('model', '=', self._name), ('res_id', 'in', self.ids)]
-        for data in self.env['ir.model.data'].search_read(domain, ['module', 'name', 'res_id']):
+        for data in self.env['ir.model.data'].sudo().search_read(domain, ['module', 'name', 'res_id']):
             xml_ids[data['res_id']].append("%s.%s" % (data['module'], data['name']))
         for cat in self:
             cat.xml_id = xml_ids.get(cat.id, [''])[0]
@@ -194,7 +194,7 @@ class Module(models.Model):
             # then, search and group ir.model.data records
             imd_models = defaultdict(list)
             imd_domain = [('module', '=', module.name), ('model', 'in', tuple(dmodels))]
-            for data in IrModelData.search(imd_domain):
+            for data in IrModelData.sudo().search(imd_domain):
                 imd_models[data.model].append(data.res_id)
 
             def browse(model):
@@ -643,6 +643,15 @@ class Module(models.Model):
         if not self.env.user.has_group('base.group_system'):
             raise AccessDenied()
 
+        # One-click install is opt-in - cfr Issue #15225
+        ad_dir = tools.config.addons_data_dir
+        if not os.access(ad_dir, os.W_OK):
+            msg = (_("Automatic install of downloaded Apps is currently disabled.") + "\n\n" +
+                   _("To enable it, make sure this directory exists and is writable on the server:") +
+                   "\n%s" % ad_dir)
+            _logger.warning(msg)
+            raise UserError(msg)
+
         apps_server = urlparse.urlparse(self.get_apps_server())
 
         OPENERP = odoo.release.product_name.lower()
@@ -708,7 +717,7 @@ class Module(models.Model):
             to_install = self.search([('name', 'in', urls.keys()), ('state', '=', 'uninstalled')])
             post_install_action = to_install.button_immediate_install()
 
-            if installed:
+            if installed or to_install:
                 # in this case, force server restart to reload python code...
                 self._cr.commit()
                 odoo.service.server.restart()

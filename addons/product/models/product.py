@@ -105,7 +105,7 @@ class ProductProduct(models.Model):
     _description = "Product"
     _inherits = {'product.template': 'product_tmpl_id'}
     _inherit = ['mail.thread']
-    _order = 'default_code'
+    _order = 'default_code, id'
 
     price = fields.Float(
         'Price', compute='_compute_product_price',
@@ -120,7 +120,7 @@ class ProductProduct(models.Model):
         help="The sale price is managed from the product template. Click on the 'Variant Prices' button to set the extra attribute prices.")
 
     default_code = fields.Char('Internal Reference', index=True)
-    code = fields.Char('Internal Reference', compute='_compute_product_code')
+    code = fields.Char('Reference', compute='_compute_product_code')
     partner_ref = fields.Char('Customer Ref', compute='_compute_partner_ref')
 
     active = fields.Boolean(
@@ -163,6 +163,10 @@ class ProductProduct(models.Model):
     pricelist_item_ids = fields.Many2many(
         'product.pricelist.item', 'Pricelist Items', compute='_get_pricelist_items')
 
+    packaging_ids = fields.One2many(
+        'product.packaging', 'product_id', 'Packaging',
+        help="Gives the different ways to package the same product.")
+
     _sql_constraints = [
         ('barcode_uniq', 'unique(barcode)', _("A barcode can only be assigned to one product !")),
     ]
@@ -177,7 +181,9 @@ class ProductProduct(models.Model):
 
             # Support context pricelists specified as display_name or ID for compatibility
             if isinstance(pricelist_id_or_name, basestring):
-                pricelist = self.env['product.pricelist'].name_search(pricelist_id_or_name, operator='=', limit=1)
+                pricelist_name_search = self.env['product.pricelist'].name_search(pricelist_id_or_name, operator='=', limit=1)
+                if pricelist_name_search:
+                    pricelist = self.env['product.pricelist'].browse([pricelist_name_search[0][0]])
             elif isinstance(pricelist_id_or_name, (int, long)):
                 pricelist = self.env['product.pricelist'].browse(pricelist_id_or_name)
 
@@ -548,7 +554,7 @@ class ProductProduct(models.Model):
             PriceHistory.create({
                 'product_id': product.id,
                 'cost': value,
-                'company_id': self._context.get('force_compay', self.env.user.company_id.id),
+                'company_id': self._context.get('force_company', self.env.user.company_id.id),
             })
 
     @api.multi
@@ -572,8 +578,9 @@ class ProductPackaging(models.Model):
 
     name = fields.Char('Packaging Type', required=True)
     sequence = fields.Integer('Sequence', default=1, help="The first in the sequence is the default one.")
-    product_tmpl_id = fields.Many2one('product.template', string='Product')
+    product_id = fields.Many2one('product.product', string='Product')
     qty = fields.Float('Quantity per Package', help="The total number of products you can have per pallet or box.")
+    barcode = fields.Char('Barcode', copy=False, help="Barcode used for packaging identification.")
 
 
 class SuppliferInfo(models.Model):

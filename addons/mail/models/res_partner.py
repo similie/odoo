@@ -14,19 +14,11 @@ class Partner(models.Model):
     """ Update partner to add a field about notification preferences. Add a generic opt-out field that can be used
        to restrict usage of automatic email templates. """
     _name = "res.partner"
-    _inherit = ['res.partner', 'mail.thread']
+    _inherit = ['res.partner', 'mail.thread', 'mail.activity.mixin']
     _mail_flat_thread = False
     _mail_mass_mailing = _('Customers')
 
     message_bounce = fields.Integer('Bounce', help="Counter of the number of bounced emails for this contact")
-    notify_email = fields.Selection([
-        ('none', 'Never'),
-        ('always', 'All Messages')],
-        'Email Messages and Notifications', required=True,
-        oldname='notification_email_send', default='always',
-        help="Policy to receive emails for new messages pushed to your personal Inbox:\n"
-             "- Never: no emails are sent\n"
-             "- All Messages: for every notification you receive in your Inbox")
     opt_out = fields.Boolean(
         'Opt-Out', help="If opt-out is checked, this contact has refused to receive emails for mass mailing and marketing campaign. "
                         "Filter 'Available for Mass Mailing' allows users to filter the partners when performing mass mailing.")
@@ -65,7 +57,7 @@ class Partner(models.Model):
 
         model_name = False
         if message.model:
-            model_name = self.env['ir.model'].sudo().search([('model', '=', self.env[message.model]._name)]).name_get()[0][1]
+            model_name = self.env['ir.model']._get(message.model).display_name
 
         record_name = message.record_name
 
@@ -77,11 +69,16 @@ class Partner(models.Model):
 
         is_discussion = message.subtype_id.id == self.env['ir.model.data'].xmlid_to_res_id('mail.mt_comment')
 
+        record = False
+        if message.res_id and message.model in self.env:
+            record = self.env[message.model].browse(message.res_id)
+
         return {
             'signature': signature,
             'website_url': website_url,
             'company_name': company_name,
             'model_name': model_name,
+            'record': record,
             'record_name': record_name,
             'tracking': tracking,
             'is_discussion': is_discussion,
@@ -140,25 +137,12 @@ class Partner(models.Model):
                 ('res_partner_id', 'in', email.recipient_ids.ids)])
             notifications.write({
                 'is_email': True,
+                'is_read': True,  # handle by email discards Inbox notification
                 'email_status': 'ready',
             })
 
     @api.multi
     def _notify(self, message, force_send=False, send_after_commit=True, user_signature=True):
-        # TDE TODO: model-dependant ? (like customer -> always email ?)
-        message_sudo = message.sudo()
-        email_channels = message.channel_ids.filtered(lambda channel: channel.email_send)
-        self.sudo().search([
-            '|',
-            ('id', 'in', self.ids),
-            ('channel_ids', 'in', email_channels.ids),
-            ('email', '!=', message_sudo.author_id and message_sudo.author_id.email or message.email_from),
-            ('notify_email', '!=', 'none')])._notify_by_email(message, force_send=force_send, send_after_commit=send_after_commit, user_signature=user_signature)
-        self._notify_by_chat(message)
-        return True
-
-    @api.multi
-    def _notify_by_email(self, message, force_send=False, send_after_commit=True, user_signature=True):
         """ Method to send email linked to notified messages. The recipients are
         the recordset on which this method is called.
 
@@ -232,7 +216,7 @@ class Partner(models.Model):
 
             def send_notifications():
                 db_registry = registry(dbname)
-                with db_registry.cursor() as cr:
+                with api.Environment.manage(), db_registry.cursor() as cr:
                     env = api.Environment(cr, SUPERUSER_ID, {})
                     env['mail.mail'].browse(email_ids).send()
 

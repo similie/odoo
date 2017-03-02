@@ -8,6 +8,7 @@
 @o-kanban-inside-vgutter: 8px;
 @o-kanban-inside-hgutter: 8px;
 @o-kanban-inside-hgutter-mobile: @odoo-horizontal-padding;
+@o-kanban-progressbar-height: 20px;
 
 // mixins
 .o-kanban-icon() {
@@ -64,7 +65,9 @@
         }
 
         .o_dropdown_kanban {
-            float: right;
+            position: absolute;
+            top: 5px;
+            right: 10px;
             @media (max-width: @screen-xs-max) {
                 visibility: visible;
             }
@@ -126,6 +129,12 @@
         .oe_kanban_text_red {
             color: #A61300;
             font-weight: bold;
+        }
+        .o_text_bold {
+            font-weight: bold;
+        }
+        .o_text_block {
+            display: block;
         }
     }
 
@@ -310,7 +319,7 @@
         }
         .o_progressbar {
             .o-flex-display();
-            height: 20px;
+            height: @o-kanban-progressbar-height;
 
             .o_progressbar_title {
                 .o-flex(0, 0, auto);
@@ -550,6 +559,7 @@
     height: 12px;
     width: 12px;
     border-radius: 6px;
+    vertical-align: middle;
 
     background-color: @odoo-brand-secondary;
 

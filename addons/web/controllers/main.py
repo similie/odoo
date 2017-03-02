@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+import werkzeug
 import werkzeug.utils
 import werkzeug.wrappers
 import zlib
@@ -586,6 +587,22 @@ class WebClient(http.Controller):
 
 class Proxy(http.Controller):
 
+    @http.route('/web/proxy/load', type='json', auth="none")
+    def load(self, path):
+        """ Proxies an HTTP request through a JSON request.
+
+        It is strongly recommended to not request binary files through this,
+        as the result will be a binary data blob as well.
+
+        :param path: actual request path
+        :return: file content
+        """
+        from werkzeug.test import Client
+        from werkzeug.wrappers import BaseResponse
+
+        base_url = request.httprequest.base_url
+        return Client(request.httprequest.app, BaseResponse).get(path, base_url=base_url).data
+
     @http.route('/web/proxy/post/<path:path>', type='http', auth='user', methods=['GET'])
     def post(self, path):
         """Effectively execute a POST request that was hooked through user login"""
@@ -613,6 +630,7 @@ class Database(http.Controller):
         d['databases'] = []
         try:
             d['databases'] = http.db_list()
+            d['incompatible_databases'] = odoo.service.db.list_db_incompatible(d['databases'])
         except odoo.exceptions.AccessDenied:
             monodb = db_monodb()
             if monodb:
@@ -621,10 +639,12 @@ class Database(http.Controller):
 
     @http.route('/web/database/selector', type='http', auth="none")
     def selector(self, **kw):
+        request._cr = None
         return self._render_template(manage=False)
 
     @http.route('/web/database/manager', type='http', auth="none")
     def manager(self, **kw):
+        request._cr = None
         return self._render_template()
 
     @http.route('/web/database/create', type='http', auth="none", methods=['POST'], csrf=False)
@@ -777,6 +797,17 @@ class Session(http.Controller):
         request.session.check_security()
         return None
 
+    @http.route('/web/session/account', type='json', auth="user")
+    def account(self):
+        ICP = request.env['ir.config_parameter'].sudo()
+        params = {
+            'response_type': 'token',
+            'client_id': ICP.get_param('database.uuid') or '',
+            'state': json.dumps({'d': request.db, 'u': ICP.get_param('web.base.url')}),
+            'scope': 'userinfo',
+        }
+        return 'https://accounts.odoo.com/oauth2/auth?' + werkzeug.url_encode(params)
+
     @http.route('/web/session/destroy', type='json', auth="user")
     def destroy(self):
         request.session.logout()
@@ -786,16 +817,6 @@ class Session(http.Controller):
         request.session.logout(keep_db=True)
         return werkzeug.utils.redirect(redirect, 303)
 
-class Menu(http.Controller):
-
-    @http.route('/web/menu/load_needaction', type='json', auth="user")
-    def load_needaction(self, menu_ids):
-        """ Loads needaction counters for specific menu ids.
-
-            :return: needaction data
-            :rtype: dict(menu_id: {'needaction_enabled': boolean, 'needaction_counter': int})
-        """
-        return request.env['ir.ui.menu'].browse(menu_ids).get_needaction_data()
 
 class DataSet(http.Controller):
 
@@ -867,11 +888,6 @@ class DataSet(http.Controller):
         if isinstance(action, dict) and action.get('type') != '':
             return clean_action(action)
         return False
-
-    @http.route('/web/dataset/exec_workflow', type='json', auth="user")
-    def exec_workflow(self, model, id, signal):
-        request.session.check_security()
-        return request.env[model].browse(id).signal_workflow(signal)[id]
 
     @http.route('/web/dataset/resequence', type='json', auth="user")
     def resequence(self, model, ids, field='sequence', offset=0):
@@ -1026,27 +1042,31 @@ class Binary(http.Controller):
     @http.route('/web/binary/upload_attachment', type='http', auth="user")
     @serialize_exception
     def upload_attachment(self, callback, model, id, ufile):
+        files = request.httprequest.files.getlist('ufile')
         Model = request.env['ir.attachment']
         out = """<script language="javascript" type="text/javascript">
                     var win = window.top.window;
                     win.jQuery(win).trigger(%s, %s);
                 </script>"""
-        try:
-            attachment = Model.create({
-                'name': ufile.filename,
-                'datas': base64.encodestring(ufile.read()),
-                'datas_fname': ufile.filename,
-                'res_model': model,
-                'res_id': int(id)
-            })
-            args = {
-                'filename': ufile.filename,
-                'mimetype': ufile.content_type,
-                'id':  attachment.id
-            }
-        except Exception:
-            args = {'error': _("Something horrible happened")}
-            _logger.exception("Fail to upload attachment %s" % ufile.filename)
+        args = []
+        for ufile in files:
+            try:
+                attachment = Model.create({
+                    'name': ufile.filename,
+                    'datas': base64.encodestring(ufile.read()),
+                    'datas_fname': ufile.filename,
+                    'res_model': model,
+                    'res_id': int(id)
+                })
+            except Exception:
+                args = args.append({'error': _("Something horrible happened")})
+                _logger.exception("Fail to upload attachment %s" % ufile.filename)
+            else:
+                args.append({
+                    'filename': ufile.filename,
+                    'mimetype': ufile.content_type,
+                    'id': attachment.id
+                })
         return out % (json.dumps(callback), json.dumps(args))
 
     @http.route([
@@ -1075,12 +1095,19 @@ class Binary(http.Controller):
                 # create an empty registry
                 registry = odoo.modules.registry.Registry(dbname)
                 with registry.cursor() as cr:
-                    cr.execute("""SELECT c.logo_web, c.write_date
-                                    FROM res_users u
-                               LEFT JOIN res_company c
-                                      ON c.id = u.company_id
-                                   WHERE u.id = %s
-                               """, (uid,))
+                    company = int(kw['company']) if kw and kw.get('company') else False
+                    if company:
+                        cr.execute("""SELECT logo_web, write_date
+                                        FROM res_company
+                                       WHERE id = %s
+                                   """, (company,))
+                    else:
+                        cr.execute("""SELECT c.logo_web, c.write_date
+                                        FROM res_users u
+                                   LEFT JOIN res_company c
+                                          ON c.id = u.company_id
+                                       WHERE u.id = %s
+                                   """, (uid,))
                     row = cr.fetchone()
                     if row and row[0]:
                         image_base64 = str(row[0]).decode('base64')
@@ -1217,7 +1244,7 @@ class Export(http.Controller):
         info = {}
         fields = self.fields_get(model)
         if ".id" in export_fields:
-            fields['.id'] = fields.pop('id', {'string': 'ID'})
+            fields['.id'] = fields.get('id', {'string': 'ID'})
 
         # To make fields retrieval more efficient, fetch all sub-fields of a
         # given field at the same time. Because the order in the export list is

@@ -3,7 +3,7 @@
 
 from odoo import api, exceptions, fields, models, _
 from odoo.exceptions import UserError
-from odoo.tools import float_compare
+from odoo.tools import float_compare, float_round
 from odoo.addons import decimal_precision as dp
 
 
@@ -81,14 +81,14 @@ class StockMove(models.Model):
         store=True,
         help='Technical Field to order moves')  # TDE: what ?
 
-    @api.multi
+    @api.depends('state', 'product_uom_qty', 'reserved_availability')
     def _qty_available(self):
         for move in self:
             # For consumables, state is available so availability = qty to do
             if move.state == 'assigned':
                 move.quantity_available = move.product_uom_qty
-            else:
-                move.quantity_available = move.reserved_availability
+            elif move.product_id.uom_id and move.product_uom:
+                move.quantity_available = move.product_id.uom_id._compute_quantity(move.reserved_availability, move.product_uom)
 
     @api.multi
     @api.depends('move_lot_ids', 'move_lot_ids.quantity_done', 'quantity_done_store')
@@ -120,7 +120,7 @@ class StockMove(models.Model):
     @api.multi
     def action_cancel(self):
         if any(move.quantity_done for move in self):
-            raise exceptions.UserError(_('You cannot cancel a move move having already consumed material'))
+            raise exceptions.UserError(_('You cannot cancel a stock move having already consumed material'))
         return super(StockMove, self).action_cancel()
 
     @api.multi
@@ -225,8 +225,14 @@ class StockMove(models.Model):
         moves_to_unreserve = self.env['stock.move']
         # Create extra moves where necessary
         for move in moves:
+            # Here, the `quantity_done` was already rounded to the product UOM by the `do_produce` wizard. However,
+            # it is possible that the user changed the value before posting the inventory by a value that should be
+            # rounded according to the move's UOM. In this specific case, we chose to round up the value, because it
+            # is what is expected by the user (if i consumed/produced a little more, the whole UOM unit should be
+            # consumed/produced and the moves are split correctly).
             rounding = move.product_uom.rounding
-            if float_compare(move.quantity_done, 0.0, precision_rounding=rounding) <= 0:
+            move.quantity_done = float_round(move.quantity_done, precision_rounding=rounding, rounding_method ='UP')
+            if move.quantity_done <= 0:
                 continue
             moves_todo |= move
             moves_todo |= move._create_extra_move()
@@ -276,7 +282,7 @@ class StockMove(models.Model):
         self.ensure_one()
         view = self.env.ref('mrp.view_stock_move_lots')
         serial = (self.has_tracking == 'serial')
-        only_create = False  # Check picking type in theory
+        only_create = False  # Check operation type in theory
         show_reserved = any([x for x in self.move_lot_ids if x.quantity > 0.0])
         ctx.update({
             'serial': serial,

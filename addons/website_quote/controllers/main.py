@@ -6,6 +6,7 @@ import werkzeug
 from odoo import fields, http, _
 from odoo.http import request
 from odoo.addons.website_mail.controllers.main import _message_post_helper
+from odoo.addons.website_portal.controllers.main import get_records_pager
 
 
 class sale_quote(http.Controller):
@@ -76,6 +77,8 @@ class sale_quote(http.Controller):
                         'alias_usage': _('If we store your payment information on our server, subscription payments will be made automatically.'),
                         'partner_id': Order.partner_id.id,
                     })
+        history = request.session.get('my_quotes_history', [])
+        values.update(get_records_pager(history, Order))
         return request.render('website_quote.so_quotation', values)
 
     @http.route(['/quote/accept'], type='json', auth="public", website=True)
@@ -189,7 +192,9 @@ class sale_quote(http.Controller):
                 'partner_id': Order.partner_id.id,
                 'reference': PaymentTransaction.get_next_reference(Order.name),
                 'sale_order_id': Order.id,
-                'callback_eval': "self.sale_order_id._confirm_online_quote(self)"
+                'callback_model_id': request.env['ir.model'].sudo().search([('model', '=', Order._name)], limit=1).id,
+                'callback_res_id': Order.id,
+                'callback_method': '_confirm_online_quote',
             })
             request.session['quote_%s_transaction_id' % Order.id] = Transaction.id
 

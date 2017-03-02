@@ -54,7 +54,7 @@ function get_fc_defaultOptions() {
         monthNamesShort: moment.monthsShort(),
         dayNames: moment.weekdays(),
         dayNamesShort: moment.weekdaysShort(),
-        firstDay: moment._locale._week.dow,
+        firstDay: moment().startOf('week').isoWeekday(),
         weekNumberCalculation: function(date) {
             return moment(date).week();
         },
@@ -797,31 +797,32 @@ var CalendarView = View.extend({
                         self.now_filter_ids = [];
 
                         var color_field = self.fields[self.color_field];
-                        _.each(events, function (e) {
-                            var key,val = null;
-                            if (color_field.type == "selection") {
-                                key = e[self.color_field];
-                                val = _.find(color_field.selection, function(name){ return name[0] === key;});
-                            } else {
-                                key = e[self.color_field][0];
-                                val = e[self.color_field];
-                            }
-                            if (!self.all_filters[key]) {
-                                filter_item = {
-                                    value: key,
-                                    label: val[1],
-                                    color: self.get_color(key),
-                                    avatar_model: (utils.toBoolElse(self.avatar_filter, true) ? self.avatar_filter : false ),
-                                    is_checked: true
-                                };
-                                self.all_filters[key] = filter_item;
-                            }
-                            if (! _.contains(self.now_filter_ids, key)) {
-                                self.now_filter_ids.push(key);
-                            }
-                        });
-
-                        if (self.sidebar) {
+                        if (color_field) {
+                            _.each(events, function (e) {
+                                var key,val = null;
+                                if (color_field.type == "selection") {
+                                    key = e[self.color_field];
+                                    val = _.find(color_field.selection, function(name){ return name[0] === key;});
+                                } else {
+                                    key = e[self.color_field][0];
+                                    val = e[self.color_field];
+                                }
+                                if (!self.all_filters[key]) {
+                                    filter_item = {
+                                        value: key,
+                                        label: val[1],
+                                        color: self.get_color(key),
+                                        avatar_model: (utils.toBoolElse(self.avatar_filter, true) ? self.avatar_filter : false ),
+                                        is_checked: true
+                                    };
+                                    self.all_filters[key] = filter_item;
+                                }
+                                if (! _.contains(self.now_filter_ids, key)) {
+                                    self.now_filter_ids.push(key);
+                                }
+                            });
+                        }
+                        if (self.sidebar && color_field) {
                             self.sidebar.filter.render();
 
                             events = $.map(events, function (e) {
@@ -914,9 +915,9 @@ var CalendarView = View.extend({
             var index = this.dataset.get_id_index(id);
             this.dataset.index = index;
             if (this.write_right) {
-                this.do_switch_view('form', null, { mode: "edit" });
+                this.do_switch_view('form', { mode: "edit" });
             } else {
-                this.do_switch_view('form', null, { mode: "view" });
+                this.do_switch_view('form', { mode: "view" });
             }
         }
         else {
@@ -930,7 +931,7 @@ var CalendarView = View.extend({
                 buttons: [
                     {text: _t("Edit"), classes: 'btn-primary', close: true, click: function() {
                         self.dataset.index = self.dataset.get_id_index(id);
-                        self.do_switch_view('form', null, { mode: "edit" });
+                        self.do_switch_view('form', { mode: "edit" });
                     }},
 
                     {text: _t("Delete"), close: true, click: function() {

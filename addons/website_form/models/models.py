@@ -41,13 +41,14 @@ class website_form_model(models.Model):
             ])
         }
         return {
-            k: v for k, v in self.get_authorized_fields().iteritems()
+            k: v for k, v in self.get_authorized_fields(self.model).iteritems()
             if k not in excluded
         }
 
-    @api.multi
-    def get_authorized_fields(self):
-        model = self.env[self.model]
+    @api.model
+    def get_authorized_fields(self, model_name):
+        """ Return the fields of the given model name as a mapping like method `fields_get`. """
+        model = self.env[model_name]
         fields_get = model.fields_get()
 
         for key, val in model._inherits.iteritems():
@@ -79,7 +80,7 @@ class website_form_model_fields(models.Model):
                          ' SET website_form_blacklisted=true'
                          ' WHERE website_form_blacklisted IS NULL')
         # add an SQL-level default value on website_form_blacklisted to that
-        # pure-SQL ir.model.field creations (e.g. in _field_create) generate
+        # pure-SQL ir.model.field creations (e.g. in _reflect) generate
         # the right default value for a whitelist (aka fields should be
         # blacklisted by default)
         self._cr.execute('ALTER TABLE ir_model_fields '

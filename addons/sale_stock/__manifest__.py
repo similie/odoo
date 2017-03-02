@@ -5,7 +5,7 @@
     'name': 'Sales and Warehouse Management',
     'version': '1.0',
     'category': 'Hidden',
-    'summary': 'Quotation, Sale Orders, Delivery & Invoicing Control',
+    'summary': 'Quotation, Sales Orders, Delivery & Invoicing Control',
     'description': """
 Manage sales quotations and orders
 ==================================
@@ -32,6 +32,7 @@ You can choose flexible invoicing methods:
         'views/sale_order_views.xml',
         'views/stock_views.xml',
         'views/sale_config_settings_views.xml',
+        'views/stock_config_settings_views.xml',
         'views/account_invoice_views.xml',
         'report/sale_order_report_templates.xml',
         'report/stock_report_deliveryslip.xml',

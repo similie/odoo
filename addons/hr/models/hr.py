@@ -93,12 +93,10 @@ class Job(models.Model):
 
 
 class Employee(models.Model):
-
     _name = "hr.employee"
     _description = "Employee"
-    _order = 'name_related'
-    _inherits = {'resource.resource': "resource_id"}
-    _inherit = ['mail.thread']
+    _order = 'name'
+    _inherit = ['mail.thread', 'resource.mixin']
 
     _mail_post_access = 'read'
 
@@ -107,8 +105,11 @@ class Employee(models.Model):
         image_path = get_module_resource('hr', 'static/src/img', 'default_image.png')
         return tools.image_resize_image_big(open(image_path, 'rb').read().encode('base64'))
 
-    # we need a related field in order to be able to sort the employee by name
-    name_related = fields.Char(related='resource_id.name', string="Resource Name", readonly=True, store=True)
+    # resource
+    name = fields.Char(related='resource_id.name', store=True, oldname='name_related')
+    user_id = fields.Many2one('res.users', 'User', related='resource_id.user_id')
+    active = fields.Boolean('Active', related='resource_id.active', default=True, store=True)
+
     country_id = fields.Many2one('res.country', string='Nationality (Country)')
     birthday = fields.Date('Date of Birth')
     ssnid = fields.Char('SSN No', help='Social Security Number')
@@ -126,7 +127,7 @@ class Employee(models.Model):
         ('divorced', 'Divorced')
     ], string='Marital Status')
     department_id = fields.Many2one('hr.department', string='Department')
-    address_id = fields.Many2one('res.partner', string='Working Address')
+    address_id = fields.Many2one('res.partner', string='Work Address')
     address_home_id = fields.Many2one('res.partner', string='Home Address')
     bank_account_id = fields.Many2one('res.partner.bank', string='Bank Account Number',
         domain="[('partner_id', '=', address_home_id)]", help='Employee bank salary account')
@@ -138,15 +139,11 @@ class Employee(models.Model):
     parent_id = fields.Many2one('hr.employee', string='Manager')
     category_ids = fields.Many2many('hr.employee.category', 'employee_category_rel', 'emp_id', 'category_id', string='Tags')
     child_ids = fields.One2many('hr.employee', 'parent_id', string='Subordinates')
-    resource_id = fields.Many2one('resource.resource', string='Resource',
-        ondelete='cascade', required=True, auto_join=True)
     coach_id = fields.Many2one('hr.employee', string='Coach')
     job_id = fields.Many2one('hr.job', string='Job Title')
     passport_id = fields.Char('Passport No')
     color = fields.Integer('Color Index', default=0)
     city = fields.Char(related='address_id.city')
-    login = fields.Char(related='user_id.login', readonly=True)
-    last_login = fields.Datetime(related='user_id.login_date', string='Latest Connection', readonly=True)
 
     # image: all image fields are base64 encoded and PIL-supported
     image = fields.Binary("Photo", default=_default_image, attachment=True,
@@ -193,6 +190,10 @@ class Employee(models.Model):
 
     @api.multi
     def write(self, vals):
+        if 'address_home_id' in vals:
+            account_id = vals.get('bank_account_id') or self.bank_account_id.id
+            if account_id:
+                self.env['res.partner.bank'].browse(account_id).partner_id = vals['address_home_id']
         tools.image_resize_images(vals)
         return super(Employee, self).write(vals)
 
@@ -229,12 +230,17 @@ class Employee(models.Model):
                 user_field_lst.append(name)
         return user_field_lst
 
+    @api.multi
+    def _message_auto_subscribe_notify(self, partner_ids):
+        # Do not notify user it has been marked as follower of its employee.
+        return
+
 
 class Department(models.Model):
 
     _name = "hr.department"
-    _description = "Hr Department"
-    _inherit = ['mail.thread', 'ir.needaction_mixin']
+    _description = "HR Department"
+    _inherit = ['mail.thread']
     _order = "name"
 
     name = fields.Char('Department Name', required=True)

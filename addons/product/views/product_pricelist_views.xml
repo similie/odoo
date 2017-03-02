@@ -115,7 +115,7 @@
                     <sheet>
                         <div class="oe_button_box" name="button_box">
                             <button name="toggle_active" type="object"
-                                    class="oe_stat_button" icon="fa-archive">
+                                    class="oe_stat_button" icon="fa-archive" groups="sales_team.group_sale_manager">
                                 <field name="active" widget="boolean_button"
                                     options='{"terminology": "archive"}'/>
                             </button>
@@ -172,7 +172,7 @@
                 Click to create a pricelist.
               </p><p>
                 A price list contains rules to be evaluated in order to compute
-                the sales price of the products.
+                the sale price of the products.
               </p><p>
                 Each rule include a set of applicability criteria (date range,
                 product category...) and a computation that easily helps to achieve

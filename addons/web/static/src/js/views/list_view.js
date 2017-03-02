@@ -554,8 +554,11 @@ var ListView = View.extend({
             if (self.display_nocontent_helper()) {
                 self.no_result();
             } else {
-                // Load previous page if the current one is empty
-                if (self.records.length === 0 && self.dataset.size() > 0) {
+                if (self.records.length && self.current_min === 1) {
+                    // Reload the list view if we delete all the records of the first page
+                    self.reload();
+                } else if (self.records.length && self.dataset.size() > 0) {
+                    // Load previous page if the current one is empty
                     self.pager.previous();
                 }
                 // Reload the list view if we are not on the last page
@@ -760,7 +763,7 @@ var ListView = View.extend({
 
         var aggregates = {};
         _.each(_.filter(columns, function (column) {
-            if (column.currency_field === 'currency_id' && records && records[0].values['currency_id']) {
+            if (column.currency_field && records.length > 0 && records[0].values['currency_id']) {
                 var currency_ids = _.map(records, function(record) {return record.values['currency_id'][0]});
                 if (_.every(currency_ids, function (currency_id){return currency_id === currency_ids[0]})) {
                     return column;
@@ -1499,20 +1502,16 @@ ListView.Groups = Class.extend({
         });
     },
     setup_resequence_rows: function (list, dataset) {
+        var sequence_field = _(this.columns).findWhere({'widget': 'handle'});
+        var seqname = sequence_field ? sequence_field.name : 'sequence';
+
         // drag and drop enabled if list is not sorted (unless it is sorted by
-        // sequence (ASC)), and there is a visible column with @widget=handle
-        // or "sequence" column in the view.
-        if ((dataset.sort && dataset.sort() && dataset.sort() !== 'sequence'
-            && dataset.sort() !== 'sequence ASC')
-            || !_(this.columns).any(function (column) {
-                    return column.widget === 'handle'
-                        || column.name === 'sequence'; })) {
+        // its sequence field (ASC)), and there is a visible column with
+        // @widget=handle or "sequence" column in the view.
+        if ((dataset.sort && [seqname, seqname + ' ASC', ''].indexOf(dataset.sort()) === -1)
+            || !_(this.columns).findWhere({'name': seqname})) {
             return;
         }
-        var sequence_field = _(this.columns).find(function (c) {
-            return c.widget === 'handle';
-        });
-        var seqname = sequence_field ? sequence_field.name : 'sequence';
 
         // ondrop, move relevant record & fix sequences
         list.$current.sortable({

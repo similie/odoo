@@ -3,7 +3,7 @@
 @mail-thread-side-date-opacity: 0.6;
 @mail-thread-note: @gray-lighter;
 
-.o_mail_thread {
+.o_mail_thread, .o_mail_activity {
     .o_thread_show_more {
         text-align: center;
     }
@@ -177,6 +177,7 @@
                     border-radius: 5px;
                     color: gray;
                     width: 300px;
+                    display: none;
                     opacity: 0;
                     position: absolute;
                     transition: opacity 0.5s;
@@ -186,6 +187,7 @@
                 }
 
                 .o_thread_tooltip:hover + .o_thread_tooltip_content {
+                    display: inline;
                     opacity: 1;
                 }
             }

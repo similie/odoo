@@ -17,12 +17,18 @@ class AccountAnalyticLine(models.Model):
 
     @api.multi
     def write(self, values):
+        so_lines = self.mapped('so_line')
         if values.get('task_id'):
             task = self.env['project.task'].browse(values['task_id'])
             values['so_line'] = task.sale_line_id.id or values.get('so_line', False)
         for line in self:
             values.update(line._get_timesheet_cost(values))
             super(AccountAnalyticLine, line).write(values)
+
+        # Update delivered quantity on SO lines which are not linked to the analytic lines anymore
+        so_lines -= self.mapped('so_line')
+        if so_lines:
+            so_lines.with_context(force_so_lines=so_lines).sudo()._compute_analytic()
         return True
 
     def _get_timesheet_cost(self, values):
@@ -54,7 +60,7 @@ class AccountAnalyticLine(models.Model):
             if not sol:
                 sol = self.env['sale.order.line'].search([
                     ('order_id.project_id', '=', self.account_id.id),
-                    ('state', '=', 'sale'),
+                    ('state', 'in', ('sale', 'done')),
                     ('product_id.track_service', '=', 'timesheet'),
                     ('product_id.type', '=', 'service')],
                     limit=1)

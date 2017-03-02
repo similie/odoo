@@ -120,6 +120,20 @@ class WebsiteSaleForm(WebsiteForm):
 
 
 class WebsiteSale(http.Controller):
+    def _get_compute_currency_and_context(self):
+        pricelist_context = dict(request.env.context)
+        pricelist = False
+        if not pricelist_context.get('pricelist'):
+            pricelist = request.website.get_current_pricelist()
+            pricelist_context['pricelist'] = pricelist.id
+        else:
+            pricelist = request.env['product.pricelist'].browse(pricelist_context['pricelist'])
+
+        from_currency = request.env.user.company_id.currency_id
+        to_currency = pricelist.currency_id
+        compute_currency = lambda price: from_currency.compute(price, to_currency)
+
+        return compute_currency, pricelist_context, pricelist
 
     def get_attribute_value_ids(self, product):
         """ list of selectable attributes of a product
@@ -200,12 +214,8 @@ class WebsiteSale(http.Controller):
         domain = self._get_search_domain(search, category, attrib_values)
 
         keep = QueryURL('/shop', category=category and int(category), search=search, attrib=attrib_list, order=post.get('order'))
-        pricelist_context = dict(request.env.context)
-        if not pricelist_context.get('pricelist'):
-            pricelist = request.website.get_current_pricelist()
-            pricelist_context['pricelist'] = pricelist.id
-        else:
-            pricelist = request.env['product.pricelist'].browse(pricelist_context['pricelist'])
+
+        compute_currency, pricelist_context, pricelist = self._get_compute_currency_and_context()
 
         request.context = dict(request.context, pricelist=pricelist.id, partner=request.env.user.partner_id)
 
@@ -238,10 +248,6 @@ class WebsiteSale(http.Controller):
             attributes = ProductAttribute.search([('attribute_line_ids.product_tmpl_id', 'in', products.ids)])
         else:
             attributes = ProductAttribute.browse(attributes_ids)
-
-        from_currency = request.env.user.company_id.currency_id
-        to_currency = pricelist.currency_id
-        compute_currency = lambda price: from_currency.compute(price, to_currency)
 
         values = {
             'search': search,
@@ -401,7 +407,7 @@ class WebsiteSale(http.Controller):
     # ------------------------------------------------------
 
     def checkout_redirection(self, order):
-        # must have a draft sale order with lines at this point, otherwise reset
+        # must have a draft sales order with lines at this point, otherwise reset
         if not order or order.state != 'draft':
             request.session['sale_order_id'] = None
             request.session['sale_transaction_id'] = None
@@ -498,8 +504,7 @@ class WebsiteSale(http.Controller):
                 shippings = Partner.sudo().search([("id", "child_of", order.partner_id.commercial_partner_id.ids)])
                 if partner_id not in shippings.mapped('id') and partner_id != order.partner_id.id:
                     return Forbidden()
-
-                Partner.browse(partner_id).sudo().update(checkout)
+                Partner.browse(partner_id).sudo().write(checkout)
         return partner_id
 
     def values_preprocess(self, order, mode, values):
@@ -507,7 +512,7 @@ class WebsiteSale(http.Controller):
 
     def values_postprocess(self, order, mode, values, errors, error_msg):
         new_values = {}
-        authorized_fields = request.env['ir.model'].sudo().search([('model', '=', 'res.partner')])._get_form_writable_fields()
+        authorized_fields = request.env['ir.model']._get('res.partner')._get_form_writable_fields()
         for k, v in values.items():
             # don't drop empty value, it could be a field to reset
             if k in authorized_fields and v is not None:
@@ -522,7 +527,8 @@ class WebsiteSale(http.Controller):
         lang = request.lang if request.lang in request.website.mapped('language_ids.code') else None
         if lang:
             new_values['lang'] = lang
-
+        if mode == ('edit', 'billing') and order.partner_id.type == 'contact':
+            new_values['type'] = 'other'
         if mode[1] == 'shipping':
             new_values['parent_id'] = order.partner_id.commercial_partner_id.id
             new_values['type'] = 'delivery'
@@ -555,7 +561,7 @@ class WebsiteSale(http.Controller):
         else:
             if partner_id > 0:
                 if partner_id == order.partner_id.id:
-                        mode = ('edit', 'billing')
+                    mode = ('edit', 'billing')
                 else:
                     shippings = Partner.search([('id', 'child_of', order.partner_id.commercial_partner_id.ids)])
                     if partner_id in shippings.mapped('id'):
@@ -692,7 +698,7 @@ class WebsiteSale(http.Controller):
         """ Payment step. This page proposes several payment means based on available
         payment.acquirer. State at this point :
 
-         - a draft sale order with lines; otherwise, clean context / session and
+         - a draft sales order with lines; otherwise, clean context / session and
            back to the shop
          - no transaction in context / session, or only a draft one, if the customer
            did go to a payment.acquirer website but closed the tab without
@@ -753,7 +759,10 @@ class WebsiteSale(http.Controller):
                 valid_state = 'authorized' if tx.acquirer_id.auto_confirm == 'authorize' else 'done'
                 if not s2s_result or tx.state != valid_state:
                     return dict(success=False, error=_("Payment transaction failed (%s)") % tx.state_message)
-                return dict(success=True, url='/shop/payment/validate')
+                else:
+                    # Auto-confirm SO if necessary
+                    tx._confirm_so()
+                    return dict(success=True, url='/shop/payment/validate')
             except Exception, e:
                 _logger.warning(_("Payment transaction (%s) failed : <%s>") % (tx.id, str(e)))
                 return dict(success=False, error=_("Payment transaction failed (Contact Administrator)"))

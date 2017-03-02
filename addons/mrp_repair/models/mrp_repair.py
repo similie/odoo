@@ -11,7 +11,7 @@ from odoo.exceptions import UserError
 class Repair(models.Model):
     _name = 'mrp.repair'
     _description = 'Repair Order'
-    _inherit = 'mail.thread'
+    _inherit = ['mail.thread', 'mail.activity.mixin']
 
     @api.model
     def _default_stock_location(self):
@@ -469,8 +469,8 @@ class RepairLine(models.Model):
             self.Location_dest_id = False
         elif self.type == 'add':
             args = self.repair_id.company_id and [('company_id', '=', self.repair_id.company_id.id)] or []
-            warehouses = self.env['stock.warehouse'].search(args)
-            self.location_id = warehouses.lot_stock_id
+            warehouse = self.env['stock.warehouse'].search(args, limit=1)
+            self.location_id = warehouse.lot_stock_id
             self.location_dest_id = self.env['stock.location'].search([('usage', '=', 'production')], limit=1).id
             self.to_invoice = self.repair_id.guarantee_limit and datetime.strptime(self.repair_id.guarantee_limit, '%Y-%m-%d') < datetime.now()
         else:
@@ -488,7 +488,7 @@ class RepairLine(models.Model):
         if not self.product_id or not self.product_uom_qty:
             return
         if partner and self.product_id:
-            self.tax_id = partner.property_account_position_id.map_tax(self.product_id.taxes_id).ids
+            self.tax_id = partner.property_account_position_id.map_tax(self.product_id.taxes_id, self.product_id, partner).ids
         if self.product_id:
             self.name = self.product_id.display_name
             self.product_uom = self.product_id.uom_id.id
@@ -550,7 +550,7 @@ class RepairFee(models.Model):
         pricelist = self.repair_id.pricelist_id
 
         if partner and self.product_id:
-            self.tax_id = partner.property_account_position_id.map_tax(self.product_id.taxes_id).ids
+            self.tax_id = partner.property_account_position_id.map_tax(self.product_id.taxes_id, self.product_id, partner).ids
         if self.product_id:
             self.name = self.product_id.display_name
             self.product_uom = self.product_id.uom_id.id

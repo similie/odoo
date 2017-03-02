@@ -30,7 +30,7 @@ class SaleReport(models.Model):
     nbr = fields.Integer('# of Lines', readonly=True)
     pricelist_id = fields.Many2one('product.pricelist', 'Pricelist', readonly=True)
     analytic_account_id = fields.Many2one('account.analytic.account', 'Analytic Account', readonly=True)
-    team_id = fields.Many2one('crm.team', 'Sales Team', readonly=True, oldname='section_id')
+    team_id = fields.Many2one('crm.team', 'Sales Channel', readonly=True, oldname='section_id')
     country_id = fields.Many2one('res.country', 'Partner Country', readonly=True)
     commercial_partner_id = fields.Many2one('res.partner', 'Commercial Entity', readonly=True)
     state = fields.Selection([
@@ -122,3 +122,17 @@ class SaleReport(models.Model):
             FROM ( %s )
             %s
             )""" % (self._table, self._select(), self._from(), self._group_by()))
+
+class SaleOrderReportProforma(models.AbstractModel):
+    _name = 'report.sale.report_saleproforma'
+
+    @api.multi
+    def render_html(self, docids, data=None):
+        docs = self.env['sale.order'].browse(docids)
+        docargs = {
+            'doc_ids': docs.ids,
+            'doc_model': 'sale.order',
+            'docs': docs,
+            'proforma': True
+        }
+        return self.env['report'].render('sale.report_saleorder', docargs)

@@ -130,6 +130,26 @@ class TestFields(common.TransactionCase):
         })
         check_stored(discussion3)
 
+    def test_11_computed_access(self):
+        """ test computed fields with access right errors """
+        User = self.env['res.users']
+        user1 = User.create({'name': 'Aaaah', 'login': 'a'})
+        user2 = User.create({'name': 'Boooh', 'login': 'b'})
+        user3 = User.create({'name': 'Crrrr', 'login': 'c'})
+        # add a rule to not give access to user2
+        self.env['ir.rule'].create({
+            'model_id': self.env['ir.model'].search([('model', '=', 'res.users')]).id,
+            'domain_force': "[('id', '!=', %d)]" % user2.id,
+        })
+        # group users as a recordset, and read them as user demo
+        users = (user1 + user2 + user3).sudo(self.env.ref('base.user_demo'))
+        user1, user2, user3 = users
+        # regression test: a bug invalidated the field's value from cache
+        user1.company_type
+        with self.assertRaises(AccessError):
+            user2.company_type
+        user3.company_type
+
     def test_12_recursive(self):
         """ test recursively dependent fields """
         Category = self.env['test_new_api.category']
@@ -477,32 +497,6 @@ class TestFields(common.TransactionCase):
         self.assertEqual(record.sudo(user0).foo, 'main')
         self.assertEqual(record.sudo(user1).foo, 'alpha')
         self.assertEqual(record.sudo(user2).foo, 'default')
-
-    def test_28_sparse(self):
-        """ test sparse fields. """
-        record = self.env['test_new_api.sparse'].create({})
-        self.assertFalse(record.data)
-
-        partner = self.env.ref('base.main_partner')
-        values = [
-            ('boolean', True),
-            ('integer', 42),
-            ('float', 3.14),
-            ('char', 'John'),
-            ('selection', 'two'),
-            ('partner', partner.id),
-        ]
-        for n, (key, val) in enumerate(values):
-            record.write({key: val})
-            self.assertEqual(record.data, dict(values[:n+1]))
-
-        for key, val in values[:-1]:
-            self.assertEqual(record[key], val)
-        self.assertEqual(record.partner, partner)
-
-        for n, (key, val) in enumerate(values):
-            record.write({key: False})
-            self.assertEqual(record.data, dict(values[n+1:]))
 
     def test_30_read(self):
         """ test computed fields as returned by read(). """

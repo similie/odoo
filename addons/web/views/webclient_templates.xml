@@ -9,7 +9,7 @@
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/utils.less"/>
     </template>
 
-    <template id="web.assets_common">
+    <template id="web.assets_common" name="Common Assets (used in backend interface and website)">
         <t t-call="web.less_helpers"/>
 
         <link rel="stylesheet" type="text/css" href="/web/static/lib/jquery.ui/jquery-ui.css"/>
@@ -21,8 +21,8 @@
 
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/mimetypes.less"/>
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/animation.less"/>
-
-        <link rel="stylesheet" type="text/less" href="/web/static/lib/bootstrap-datetimepicker/src/less/bootstrap-datetimepicker.less"/>
+        <link rel="stylesheet" type="text/less" href="/web/static/src/less/datepicker.less"/>
+        <link rel="stylesheet" type="text/less" href="/web/static/lib/bootstrap-datetimepicker/src/less/_bootstrap-datetimepicker.less"/>
         <link rel="stylesheet" type="text/css" href="/web/static/lib/select2/select2.css"/>
         <link rel="stylesheet" type="text/css" href="/web/static/lib/select2-bootstrap-css/select2-bootstrap.css"/>
 
@@ -79,7 +79,7 @@
         <script type="text/javascript" src="/web/static/src/js/framework/local_storage.js"></script>
     </template>
 
-    <template id="web.assets_backend">
+    <template id="web.assets_backend" name="Backend Assets (used in backend interface)">
         <t t-call="web.less_helpers"/>
 
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/import_bootstrap.less"/>
@@ -92,7 +92,8 @@
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/webclient_layout.less"/>
 
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/webclient.less"/>
-        <link rel="stylesheet" type="text/less" href="/web/static/src/less/datepicker.less"/>
+        <link rel="stylesheet" type="text/less" href="/web/static/src/less/domain_selector.less"/>
+        <link rel="stylesheet" type="text/less" href="/web/static/src/less/model_field_selector.less"/>
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/progress_bar.less"/>
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/dropdown.less"/>
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/tooltip.less"/>
@@ -132,6 +133,7 @@
         <script type="text/javascript" src="/web/static/lib/jquery.ba-bbq/jquery.ba-bbq.js"></script>
 
         <script type="text/javascript" src="/web/static/src/js/framework/data_model.js"></script>
+        <script type="text/javascript" src="/web/static/src/js/framework/domain_utils.js"></script>
         <script type="text/javascript" src="/web/static/src/js/framework/formats.js"></script>
         <script type="text/javascript" src="/web/static/src/js/framework/view.js"></script>
         <script type="text/javascript" src="/web/static/src/js/framework/pyeval.js"></script>
@@ -153,7 +155,10 @@
         <script type="text/javascript" src="/web/static/src/js/widgets/debug_manager.js"></script>
         <script type="text/javascript" src="/web/static/src/js/widgets/data_export.js"></script>
         <script type="text/javascript" src="/web/static/src/js/widgets/date_picker.js"></script>
+        <script type="text/javascript" src="/web/static/src/js/widgets/domain_selector_dialog.js"></script>
+        <script type="text/javascript" src="/web/static/src/js/widgets/domain_selector.js"></script>
         <script type="text/javascript" src="/web/static/src/js/widgets/loading.js"></script>
+        <script type="text/javascript" src="/web/static/src/js/widgets/model_field_selector.js"></script>
         <script type="text/javascript" src="/web/static/src/js/widgets/notification.js"></script>
         <script type="text/javascript" src="/web/static/src/js/widgets/sidebar.js"></script>
         <script type="text/javascript" src="/web/static/src/js/widgets/priority.js"></script>
@@ -182,7 +187,7 @@
         <script type="text/javascript" src="/web/static/src/js/apps.js"></script>
     </template>
 
-    <template id="web.assets_frontend">
+    <template id="web.assets_frontend" name="Website Assets">
         <t t-call="web.less_helpers"/>
 
         <link rel="stylesheet" type="text/less" href="/web/static/src/less/import_bootstrap.less"/>
@@ -263,7 +268,7 @@
 
                 <div class="form-group field-password">
                     <label for="password" class="control-label">Password</label>
-                    <input type="password" name="password" id="password" class="form-control" required="required" t-att-autofocus="'autofocus' if login else None"/>
+                    <input type="password" name="password" id="password" class="form-control" required="required" autocomplete="current-password" t-att-autofocus="'autofocus' if login else None" maxlength="4096"/>
                 </div>
 
                 <p class="alert alert-danger" t-if="error">

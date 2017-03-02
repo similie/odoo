@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from datetime import date
+from dateutil.relativedelta import relativedelta
+
 from odoo import api, fields, models, _
 from odoo.exceptions import ValidationError
 
@@ -47,7 +50,7 @@ class Contract(models.Model):
 
     _name = 'hr.contract'
     _description = 'Contract'
-    _inherit = ['mail.thread', 'ir.needaction_mixin']
+    _inherit = ['mail.thread']
 
     name = fields.Char('Contract Reference', required=True)
     employee_id = fields.Many2one('hr.employee', string='Employee', required=True)
@@ -58,7 +61,9 @@ class Contract(models.Model):
     date_end = fields.Date('End Date')
     trial_date_start = fields.Date('Trial Start Date')
     trial_date_end = fields.Date('Trial End Date')
-    working_hours = fields.Many2one('resource.calendar', string='Working Schedule')
+    resource_calendar_id = fields.Many2one(
+        'resource.calendar', 'Working Schedule',
+        default=lambda self: self.env['res.company']._company_default_get().resource_calendar_id.id)
     wage = fields.Float('Wage', digits=(16, 2), required=True, help="Basic Salary of the employee")
     advantages = fields.Text('Advantages')
     notes = fields.Text('Notes')
@@ -77,19 +82,35 @@ class Contract(models.Model):
         if self.employee_id:
             self.job_id = self.employee_id.job_id
             self.department_id = self.employee_id.department_id
+            self.resource_calendar_id = self.employee_id.resource_calendar_id
 
     @api.constrains('date_start', 'date_end')
     def _check_dates(self):
         if self.filtered(lambda c: c.date_end and c.date_start > c.date_end):
             raise ValidationError(_('Contract start date must be less than contract end date.'))
 
-    @api.multi
-    def set_as_pending(self):
-        return self.write({'state': 'pending'})
+    @api.model
+    def update_to_pending(self):
+        soon_expired_contracts = self.search([
+            ('state', '=', 'open'),
+            '|',
+            ('date_end', '>=', fields.Date.to_string(date.today() + relativedelta(days=-7))),
+            ('visa_expire', '>=', fields.Date.to_string(date.today() + relativedelta(days=-60)))
+        ])
+        return soon_expired_contracts.write({
+            'state': 'pending'
+        })
 
-    @api.multi
-    def set_as_close(self):
-        return self.write({'state': 'close'})
+    @api.model
+    def update_to_close(self):
+        expired_contracts = self.search([
+            '|',
+            ('date_end', '>=', fields.Date.to_string(date.today() + relativedelta(days=1))),
+            ('visa_expire', '>=', fields.Date.to_string(date.today() + relativedelta(days=1)))
+        ])
+        return expired_contracts.write({
+            'state': 'close'
+        })
 
     @api.multi
     def _track_subtype(self, init_values):

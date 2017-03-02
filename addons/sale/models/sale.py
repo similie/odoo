@@ -14,7 +14,7 @@ import odoo.addons.decimal_precision as dp
 
 class SaleOrder(models.Model):
     _name = "sale.order"
-    _inherit = ['mail.thread', 'ir.needaction_mixin']
+    _inherit = ['mail.thread', 'mail.activity.mixin']
     _description = "Sales Order"
     _order = 'date_order desc, id desc'
 
@@ -49,7 +49,7 @@ class SaleOrder(models.Model):
         refund is not directly linked to the SO.
         """
         for order in self:
-            invoice_ids = order.order_line.mapped('invoice_lines').mapped('invoice_id')
+            invoice_ids = order.order_line.mapped('invoice_lines').mapped('invoice_id').filtered(lambda r: r.type in ['out_invoice', 'out_refund'])
             # Search for invoices which have been 'cancelled' (filter_refund = 'modify' in
             # 'account.invoice.refund')
             # use like as origin may contains multiple references (e.g. 'SO01, SO02')
@@ -114,7 +114,7 @@ class SaleOrder(models.Model):
     validity_date = fields.Date(string='Expiration Date', readonly=True, states={'draft': [('readonly', False)], 'sent': [('readonly', False)]},
         help="Manually set the expiration date of your quotation (offer), or it will set the date automatically based on the template if online quotation is installed.")
     create_date = fields.Datetime(string='Creation Date', readonly=True, index=True, help="Date on which sales order is created.")
-    confirmation_date = fields.Datetime(string='Confirmation Date', readonly=True, index=True, help="Date on which the sale order is confirmed.", oldname="date_confirm")
+    confirmation_date = fields.Datetime(string='Confirmation Date', readonly=True, index=True, help="Date on which the sales order is confirmed.", oldname="date_confirm")
     user_id = fields.Many2one('res.users', string='Salesperson', index=True, track_visibility='onchange', default=lambda self: self.env.user)
     partner_id = fields.Many2one('res.partner', string='Customer', readonly=True, states={'draft': [('readonly', False)], 'sent': [('readonly', False)]}, required=True, change_default=True, index=True, track_visibility='always')
     partner_invoice_id = fields.Many2one('res.partner', string='Invoice Address', readonly=True, required=True, states={'draft': [('readonly', False)], 'sent': [('readonly', False)]}, help="Invoice address for current sales order.")
@@ -125,7 +125,7 @@ class SaleOrder(models.Model):
     project_id = fields.Many2one('account.analytic.account', 'Analytic Account', readonly=True, states={'draft': [('readonly', False)], 'sent': [('readonly', False)]}, help="The analytic account related to a sales order.", copy=False)
     related_project_id = fields.Many2one('account.analytic.account', inverse='_inverse_project_id', related='project_id', string='Analytic Account', help="The analytic account related to a sales order.")
 
-    order_line = fields.One2many('sale.order.line', 'order_id', string='Order Lines', states={'cancel': [('readonly', True)], 'done': [('readonly', True)]}, copy=True)
+    order_line = fields.One2many('sale.order.line', 'order_id', string='Order Lines', states={'cancel': [('readonly', True)], 'done': [('readonly', True)]}, copy=True, auto_join=True)
 
     invoice_count = fields.Integer(string='# of Invoices', compute='_get_invoiced', readonly=True)
     invoice_ids = fields.Many2many("account.invoice", string='Invoices', compute="_get_invoiced", readonly=True, copy=False)
@@ -145,7 +145,7 @@ class SaleOrder(models.Model):
     payment_term_id = fields.Many2one('account.payment.term', string='Payment Terms', oldname='payment_term')
     fiscal_position_id = fields.Many2one('account.fiscal.position', oldname='fiscal_position', string='Fiscal Position')
     company_id = fields.Many2one('res.company', 'Company', default=lambda self: self.env['res.company']._company_default_get('sale.order'))
-    team_id = fields.Many2one('crm.team', 'Sales Team', change_default=True, default=_get_default_team, oldname='section_id')
+    team_id = fields.Many2one('crm.team', 'Sales Channel', change_default=True, default=_get_default_team, oldname='section_id')
     procurement_group_id = fields.Many2one('procurement.group', 'Procurement Group', copy=False)
 
     product_id = fields.Many2one('product.product', related='order_line.product_id', string='Product')
@@ -189,7 +189,7 @@ class SaleOrder(models.Model):
         """
         Update the following fields when the partner is changed:
         - Pricelist
-        - Payment term
+        - Payment terms
         - Invoice address
         - Delivery address
         """
@@ -281,7 +281,7 @@ class SaleOrder(models.Model):
         self.ensure_one()
         journal_id = self.env['account.invoice'].default_get(['journal_id'])['journal_id']
         if not journal_id:
-            raise UserError(_('Please define an accounting sale journal for this company.'))
+            raise UserError(_('Please define an accounting sales journal for this company.'))
         invoice_vals = {
             'name': self.client_order_ref or '',
             'origin': self.name,
@@ -307,29 +307,16 @@ class SaleOrder(models.Model):
 
     @api.multi
     def action_view_invoice(self):
-        invoice_ids = self.mapped('invoice_ids')
-        imd = self.env['ir.model.data']
-        action = imd.xmlid_to_object('account.action_invoice_tree1')
-        list_view_id = imd.xmlid_to_res_id('account.invoice_tree')
-        form_view_id = imd.xmlid_to_res_id('account.invoice_form')
-
-        result = {
-            'name': action.name,
-            'help': action.help,
-            'type': action.type,
-            'views': [[list_view_id, 'tree'], [form_view_id, 'form'], [False, 'graph'], [False, 'kanban'], [False, 'calendar'], [False, 'pivot']],
-            'target': action.target,
-            'context': action.context,
-            'res_model': action.res_model,
-        }
-        if len(invoice_ids) > 1:
-            result['domain'] = "[('id','in',%s)]" % invoice_ids.ids
-        elif len(invoice_ids) == 1:
-            result['views'] = [(form_view_id, 'form')]
-            result['res_id'] = invoice_ids.ids[0]
+        invoices = self.mapped('invoice_ids')
+        action = self.env.ref('account.action_invoice_tree1').read()[0]
+        if len(invoices) > 1:
+            action['domain'] = [('id', 'in', invoices.ids)]
+        elif len(invoices) == 1:
+            action['views'] = [(self.env.ref('account.invoice_form').id, 'form')]
+            action['res_id'] = invoices.ids[0]
         else:
-            result = {'type': 'ir.actions.act_window_close'}
-        return result
+            action = {'type': 'ir.actions.act_window_close'}
+        return action
 
     @api.multi
     def action_invoice_create(self, grouped=False, final=False):
@@ -420,16 +407,16 @@ class SaleOrder(models.Model):
             compose_form_id = ir_model_data.get_object_reference('mail', 'email_compose_message_wizard_form')[1]
         except ValueError:
             compose_form_id = False
-        ctx = dict()
-        ctx.update({
+        ctx = {
             'default_model': 'sale.order',
             'default_res_id': self.ids[0],
             'default_use_template': bool(template_id),
             'default_template_id': template_id,
             'default_composition_mode': 'comment',
             'mark_so_as_sent': True,
-            'custom_layout': "sale.mail_template_data_notification_email_sale_order"
-        })
+            'custom_layout': "sale.mail_template_data_notification_email_sale_order",
+            'proforma': self.env.context.get('proforma', False)
+        }
         return {
             'type': 'ir.actions.act_window',
             'view_type': 'form',
@@ -455,7 +442,11 @@ class SaleOrder(models.Model):
     def action_done(self):
         self.write({'state': 'done'})
 
-    @api.model
+    @api.multi
+    def action_unlock(self):
+        self.write({'state': 'sale'})
+
+    @api.multi
     def _prepare_procurement_group(self):
         return {'name': self.name}
 
@@ -515,12 +506,18 @@ class SaleOrder(models.Model):
         res = {}
         currency = self.currency_id or self.company_id.currency_id
         for line in self.order_line:
+            base_tax = 0
             for tax in line.tax_id:
                 group = tax.tax_group_id
                 res.setdefault(group, 0.0)
-                res[group] += tax.compute_all(line.price_reduce, quantity=line.product_uom_qty)['taxes'][0]['amount']
+                amount = tax.compute_all(line.price_reduce + base_tax, quantity=line.product_uom_qty,
+                                         product=line.product_id, partner=line.order_partner_id)['taxes'][0]['amount']
+                res[group] += amount
+                if tax.include_base_amount:
+                    base_tax += tax.compute_all(line.price_reduce + base_tax, quantity=1, product=line.product_id,
+                                                partner=line.order_partner_id)['taxes'][0]['amount']
         res = sorted(res.items(), key=lambda l: l[0].sequence)
-        res = map(lambda l: (l[0].name, formatLang(self.env, l[1], currency_obj=currency)), res)
+        res = map(lambda l: (l[0].name, l[1]), res)
         return res
 
 
@@ -639,7 +636,7 @@ class SaleOrderLine(models.Model):
         return {
             'name': self.name,
             'origin': self.order_id.name,
-            'date_planned': datetime.strptime(self.order_id.date_order, DEFAULT_SERVER_DATETIME_FORMAT) + timedelta(days=self.customer_lead),
+            'date_planned': datetime.strptime(self.order_id.confirmation_date, DEFAULT_SERVER_DATETIME_FORMAT) + timedelta(days=self.customer_lead),
             'product_id': self.product_id.id,
             'product_qty': self.product_uom_qty,
             'product_uom': self.product_uom.id,
@@ -678,6 +675,10 @@ class SaleOrderLine(models.Model):
             new_procs += new_proc
         new_procs.run()
         return new_procs
+
+    @api.model
+    def _get_purchase_price(self, pricelist, product, product_uom, date):
+        return {}
 
     @api.model
     def create(self, values):
@@ -749,13 +750,13 @@ class SaleOrderLine(models.Model):
     order_partner_id = fields.Many2one(related='order_id.partner_id', store=True, string='Customer')
     analytic_tag_ids = fields.Many2many('account.analytic.tag', string='Analytic Tags')
     is_downpayment = fields.Boolean(
-        string="Is a down payment", help="Down payments are made when creating invoices from a sale order."
-        " They are not copied when duplicating a sale order.")
+        string="Is a down payment", help="Down payments are made when creating invoices from a sales order."
+        " They are not copied when duplicating a sales order.")
 
     state = fields.Selection([
         ('draft', 'Quotation'),
         ('sent', 'Quotation Sent'),
-        ('sale', 'Sale Order'),
+        ('sale', 'Sales Order'),
         ('done', 'Done'),
         ('cancel', 'Cancelled'),
     ], related='order_id.state', string='Order Status', readonly=True, copy=False, store=True, default='draft')
@@ -893,7 +894,7 @@ class SaleOrderLine(models.Model):
     @api.multi
     def unlink(self):
         if self.filtered(lambda x: x.state in ('sale', 'done')):
-            raise UserError(_('You can not remove a sale order line.\nDiscard changes and try setting the quantity to 0.'))
+            raise UserError(_('You can not remove a sales order line.\nDiscard changes and try setting the quantity to 0.'))
         return super(SaleOrderLine, self).unlink()
 
     @api.multi
@@ -911,17 +912,22 @@ class SaleOrderLine(models.Model):
             :parem float qty: total quentity of product
             :param tuple price_and_rule: tuple(price, suitable_rule) coming from pricelist computation
             :param obj uom: unit of measure of current order line
-            :param integer pricelist_id: pricelist id of sale order"""
+            :param integer pricelist_id: pricelist id of sales order"""
         PricelistItem = self.env['product.pricelist.item']
         field_name = 'lst_price'
         currency_id = None
+        product_currency = None
         if rule_id:
             pricelist_item = PricelistItem.browse(rule_id)
             if pricelist_item.base == 'standard_price':
                 field_name = 'standard_price'
+            if pricelist_item.base == 'pricelist' and pricelist_item.base_pricelist_id:
+                field_name = 'price'
+                product = product.with_context(pricelist=pricelist_item.base_pricelist_id.id)
+                product_currency = pricelist_item.base_pricelist_id.currency_id
             currency_id = pricelist_item.pricelist_id.currency_id
 
-        product_currency = (product.company_id and product.company_id.currency_id) or self.env.user.company_id.currency_id
+        product_currency = product_currency or(product.company_id and product.company_id.currency_id) or self.env.user.company_id.currency_id
         if not currency_id:
             currency_id = product_currency
             cur_factor = 1.0

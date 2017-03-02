@@ -44,10 +44,6 @@ class WebsiteBlog(http.Controller):
 
         return OrderedDict((year, [m for m in months]) for year, months in itertools.groupby(groups, lambda g: g['year']))
 
-    def _to_date(self, dt):
-        # TODO remove me in master/saas-14
-        return fields.Date.from_string(dt)
-
     @http.route([
         '/blog',
         '/blog/page/<int:page>',
@@ -176,7 +172,7 @@ class WebsiteBlog(http.Controller):
     def blog_feed(self, blog, limit='15'):
         v = {}
         v['blog'] = blog
-        v['base_url'] = request.env['ir.config_parameter'].get_param('web.base.url')
+        v['base_url'] = request.env['ir.config_parameter'].sudo().get_param('web.base.url')
         v['posts'] = request.env['blog.post'].search([('blog_id','=', blog.id)], limit=min(int(limit), 50))
         r = request.render("website_blog.blog_feed", v, headers=[('Content-Type', 'application/atom+xml')])
         return r

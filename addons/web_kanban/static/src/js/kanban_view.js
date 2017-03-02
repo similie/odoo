@@ -123,19 +123,28 @@ var KanbanView = View.extend({
         var self = this;
         var group_by_field = group_by[0] || this.default_group_by;
         var field = this.fields_view.fields[group_by_field];
-        var grouped_by_m2o = field && (field.type === 'many2one');
-
-        var options = {
-            search_domain: domain,
-            search_context: context,
-            group_by_field: group_by_field,
-            grouped: group_by.length || this.default_group_by,
-            grouped_by_m2o: grouped_by_m2o,
-            relation: (grouped_by_m2o ? field.relation : undefined),
-        };
-
+        var options = {};
+        var fields_def;
+        if (field === undefined) {
+            fields_def = data_manager.load_fields(this.dataset).then(function (fields) {
+                self.fields = fields;
+                field = self.fields[group_by_field];
+            });
+        }
+        var load_def = $.when(fields_def).then(function() {
+            var grouped_by_m2o = field && (field.type === 'many2one');
+            options = _.extend(options, {
+                search_domain: domain,
+                search_context: context,
+                group_by_field: group_by_field,
+                grouped: group_by.length || self.default_group_by,
+                grouped_by_m2o: grouped_by_m2o,
+                relation: (grouped_by_m2o ? field.relation : undefined),
+            });
+            return options.grouped ? self.load_groups(options) : self.load_records();
+        });
         return this.search_orderer
-            .add(options.grouped ? this.load_groups(options) : this.load_records())
+            .add(load_def)
             .then(function (data) {
                 _.extend(self, options);
                 if (options.grouped) {
@@ -183,14 +192,7 @@ var KanbanView = View.extend({
         var group_by_field = options.group_by_field;
         var fields_keys = _.uniq(this.fields_keys.concat(group_by_field));
 
-        var fields_def;
-        if (this.fields_view.fields[group_by_field] === undefined) {
-            fields_def = data_manager.load_fields(this.dataset).then(function (fields) {
-                self.fields = fields;
-            })
-        }
-
-        var load_groups_def = new Model(this.model, options.search_context, options.search_domain)
+        return new Model(this.model, options.search_context, options.search_domain)
         .query(fields_keys)
         .group_by([group_by_field])
         .then(function (groups) {
@@ -293,7 +295,6 @@ var KanbanView = View.extend({
                 };
             });
         });
-        return $.when(load_groups_def, fields_def);
     },
 
     is_action_enabled: function(action) {
@@ -520,7 +521,7 @@ var KanbanView = View.extend({
 
     open_record: function (event, options) {
         if (this.dataset.select_id(event.data.id)) {
-            this.do_switch_view('form', null, options); //, null, { mode: "edit" });
+            this.do_switch_view('form', options);
         } else {
             this.do_warn("Kanban: could not find id#" + event.data.id);
         }
@@ -710,24 +711,19 @@ var KanbanView = View.extend({
         var context = {};
         context['default_' + this.group_by_field] = column.id;
         var name = event.data.value;
-        this.dataset.name_create(name, context).then(function on_success (data) {
+        this.dataset.name_create(name, context).done(function(data) {
             add_record(data[0]);
-        }, function on_fail (event) {
+        }).fail(function(error, event) {
             event.preventDefault();
-            var popup = new form_common.SelectCreatePopup(this);
-            popup.select_element(
-                self.model,
-                {
-                    title: _t("Create: "),
-                    initial_view: "form",
-                    disable_multiple_selection: true
-                },
-                [],
-                {"default_name": name}
-            );
-            popup.on("elements_selected", self, function(element_ids) {
-                add_record(element_ids[0]);
-            });
+            var dialog = new form_common.FormViewDialog(self, {
+                res_model: self.model,
+                context: _.extend({"default_name": name}, context),
+                title: _t("Create"),
+                disable_multiple_selection: true,
+                on_selected: function(element_ids) {
+                    add_record(element_ids[0]);
+                }
+            }).open();
         });
 
         function add_record(id) {
@@ -817,8 +813,26 @@ function transform_qweb_template (node, fvg, many2manys) {
             } else if (fields_registry.contains(ftype)) {
                 // do nothing, the kanban record will handle it
             } else {
-                node.tag = qweb.prefix;
-                node.attrs[qweb.prefix + '-esc'] = 'record.' + node.attrs.name + '.value';
+                node.tag = 'span';
+                var child_node = {
+                    attrs: {},
+                    children: [],
+                    tag: qweb.prefix,
+                };
+                child_node.attrs[qweb.prefix + '-esc'] = 'record.' + node.attrs.name + '.value';
+                node.children.push(child_node);
+
+                // set class according to field attribute
+                var child_classes = [];
+                if (node.attrs.display === 'right') {
+                    child_classes.push('pull-right');
+                } else if (node.attrs.display === 'full') {
+                    child_classes.push('o_text_block');
+                }
+                if (node.attrs.bold) {
+                    child_classes.push('o_text_bold');
+                }
+                node.attrs['class'] = child_classes.join(' ');
             }
             break;
         case 'button':
