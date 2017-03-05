@@ -13,13 +13,12 @@
 # fi
 
 app="raphter"
-if [ $(docker ps -q -f name="$app") ] 
-then 
+if [ $(docker ps -q -f name="$app") ]; then 
   docker stop "$app" && docker rm -f "$app"
 fi
 
 
-app="similie/raphter"
-if !docker images | awk -v app="app" 'NR>1{  ($(NF) == app )  }'; then
-  docker rmi "$app" 
+image="similie/raphter"
+if [$(docker images -f reference="$image")]; then
+  docker rmi "$image" 
 fi
