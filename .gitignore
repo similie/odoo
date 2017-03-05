@@ -32,3 +32,10 @@ install/win32/meta.py
 /man/
 /share/
 /src/
+
+/odoo/bin/
+/odoo/lib/
+/odoo/share/
+/odoo/addons/filestore/
+/odoo/addons/sessions/
+/odoo/include/

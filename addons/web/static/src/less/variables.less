@@ -1,20 +1,34 @@
+/* Similie colors */
+
+@s-blue: #52B3D9;
+@s-gray: #86878A;
+@s-green: #CCDD4A;
+@s-red: #FE7993;
+@s-yellow: #CBC338;
+@s-orange: #F4B350 ; 
+@font-color: #333 ;
+@logo-color: #6D6D6D;
+@font-color-light: #86878A ;
+
+
+
 @odoo-font-size-base: 13px;
 
 // Colors
-@odoo-brand-primary: #7c7bad;
-@odoo-brand-optional: #7c7bad;
-@odoo-brand-secondary: #f0eeee;
-@odoo-brand-lightsecondary: #e2e2e0;
+@odoo-brand-primary: @s-blue;// #7c7bad;
+@odoo-brand-optional: @s-blue;// #7c7bad;
+@odoo-brand-secondary: white;// #f0eeee;
+@odoo-brand-lightsecondary: @s-blue;//#e2e2e0;
 
-@odoo-color-pink: #875A7B;
-@odoo-main-color-muted: #a8a8a8;
-@odoo-main-text-color: #4c4c4c;
+@odoo-color-pink: @s-red;// #875A7B;
+@odoo-main-color-muted: @font-color-light;// #a8a8a8;
+@odoo-main-text-color: @font-color;// #4c4c4c;
 
 @odoo-view-background-color: white;
-@odoo-shadow-color: #303030;
+@odoo-shadow-color: @font-color; //#303030;
 
 @odoo-webclient-background-color: @odoo-brand-secondary;
-@odoo-control-panel-background-color: @odoo-webclient-background-color;
+@odoo-control-panel-background-color:@odoo-webclient-background-color;
 @odoo-form-lightsecondary: #ccc;
 @odoo-list-grey: @odoo-brand-lightsecondary;
 
