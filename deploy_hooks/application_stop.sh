@@ -13,7 +13,8 @@
 # fi
 
 app="raphter"
-if [ docker ps -q -f name="$app" ]; then 
+if [ $(docker ps -q -f name="$app") ] 
+then 
   docker stop "$app" && docker rm -f "$app"
 fi
 
