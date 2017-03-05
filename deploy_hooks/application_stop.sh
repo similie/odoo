@@ -1,4 +1,4 @@
 #!/bin/bash
 docker stop raphter
-docker rm raphter
-docker rmi similie/raphter
+docker rm -f raphter
+docker rmi -f similie/raphter
