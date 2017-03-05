@@ -53,9 +53,9 @@ permissions:
 #   the "hooks" section altogether. A blank or incomplete "hooks" section
 #   may cause associated deployments to fail.
 hooks:
-  # ApplicationStop:
-  #   - location:  deploy_hooks/application_stop.sh
-  #     runas: ubuntu
+  ApplicationStop:
+    - location:  deploy_hooks/application_stop.sh
+    runas: ubuntu
   #  - location: deploy_hooks/kill_process.sh
   #    timeout: 1
   #    runas: root
@@ -89,11 +89,11 @@ hooks:
  #   - location: deploy_hooks/before_install.sh
  #     runas: root
   AfterInstall:
-   - location: deploy_hooks/after_install.sh
-     runas: root
+    - location: deploy_hooks/after_install.sh
+    runas: root
   ApplicationStart:
     - location: deploy_hooks/application_start.sh   
-      runas: root
+    runas: root
   BeforeInstall:
     - location: deploy_hooks/before_install.sh
-      runas: root 
+    runas: root 
