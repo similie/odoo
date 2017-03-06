@@ -45,7 +45,7 @@ EXPOSE 8069 8071 8072 5432
 
 ENV ODOO_VERSION 10.0
 
-ENV ODOO_RC /usr/src/app/.odoorc
+ENV ODOO_RC /usr/src/app/odoorc
 
 RUN useradd -ms /bin/bash similie
 
