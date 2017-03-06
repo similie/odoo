@@ -1,10 +1,17 @@
 #!/bin/bash
-#cd /home/ubuntu/apps/agromet
 
-# app="raphter"
-# if [ $(docker ps -q -f name="$app") ]; then 
-#   docker stop "$app" && docker rm -f "$app"
-# fi
+
+
+
+CONTAINER=="raphter"
+
+RUNNING=$(docker inspect --format="{{ .State.Running }}" $CONTAINER 2> /dev/null)
+IMAGE="similie/raphter"
+#RUNNING=$(docker ps -q -f name="$CONTAINER" 2> /dev/null)
+if [ "$RUNNING" == "true" ]; then 
+  docker stop "$CONTAINER" && docker rm "$CONTAINER"
+  docker rmi "$IMAGE" 
+fi
 
 
 # image="similie/raphter"
