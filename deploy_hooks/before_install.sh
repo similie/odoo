@@ -5,16 +5,15 @@
 
 CONTAINER=="raphter"
 
-RUNNING=$(docker inspect --format="{{ .State.Running }}" $CONTAINER 2> /dev/null)
+# RUNNING=docker ps -q -f name="$CONTAINER"; 
+#$(docker inspect --format="{{ .State.Running }}" $CONTAINER 2> /dev/null)
 IMAGE="similie/raphter"
 #RUNNING=$(docker ps -q -f name="$CONTAINER" 2> /dev/null)
-if [ "$RUNNING" == "true" ]; then 
+if [$(docker ps -q -f name="$CONTAINER")]; then 
   docker stop "$CONTAINER" && docker rm "$CONTAINER"
   #docker rmi "$IMAGE" 
 fi
 
-
-image="similie/raphter"
-if [$(docker images -f reference="$image")]; then
-  docker rmi "$image" 
+if [$(docker images | grep "$IMAGE")]; then
+  docker rmi "$IMAGE" 
 fi
