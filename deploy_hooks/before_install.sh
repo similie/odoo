@@ -1,6 +1,4 @@
 #!/bin/bash
-
-
 set -e
 
 CONTAINER=="raphter"
@@ -10,7 +8,6 @@ CONTAINER=="raphter"
 IMAGE="similie/raphter"
 
 docker rm -f "$CONTAINER" || true
-
 
 docker rmi -f "$IMAGE" || true 
 #RUNNING=$(docker ps -q -f name="$CONTAINER" 2> /dev/null)
