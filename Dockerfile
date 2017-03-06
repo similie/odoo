@@ -41,7 +41,7 @@ RUN pip install -r requirements.txt
 COPY . /usr/src/app/
 
 
-EXPOSE 8069 8071 8072 5432
+EXPOSE 8069 8071 8072
 
 ENV ODOO_VERSION 10.0
 
