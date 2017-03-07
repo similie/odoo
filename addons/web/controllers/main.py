@@ -100,7 +100,7 @@ def ensure_db(redirect='/web/database/selector'):
     # `http.db_filter()` in order to ensure it's legit and thus avoid db
     # forgering that could lead to xss attacks.
     db = request.params.get('db') and request.params.get('db').strip()
-
+    
     # Ensure db is legit
     if db and db not in http.db_filter([db]):
         db = None
@@ -121,17 +121,20 @@ def ensure_db(redirect='/web/database/selector'):
         response = werkzeug.utils.redirect(url_redirect, 302)
         request.session.db = db
         abort_and_redirect(url_redirect)
-
     # if db not provided, use the session one
     if not db and request.session.db and http.db_filter([request.session.db]):
         db = request.session.db
-
     # if no database provided and no database in session, use monodb
     if not db:
         db = db_monodb(request.httprequest)
-
     # if no db can be found til here, send to the database selector
     # the database selector will redirect to database manager if needed
+    #
+    # Simile Overrides
+    #
+    if not db:
+       db = odoo.tools.config['db_name']
+    # End overrides
     if not db:
         werkzeug.exceptions.abort(werkzeug.utils.redirect(redirect, 303))
 
@@ -139,6 +142,8 @@ def ensure_db(redirect='/web/database/selector'):
     if db != request.session.db:
         request.session.logout()
         abort_and_redirect(request.httprequest.url)
+
+
 
     request.session.db = db
 
