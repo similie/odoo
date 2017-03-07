@@ -53,5 +53,5 @@ RUN chown -R similie /usr/src/app
 
 USER similie
 
-CMD [ "./odoo-bin" ]
+CMD [ "./odoo-bin", "--config=/usr/src/app/odoorc" ]
 
