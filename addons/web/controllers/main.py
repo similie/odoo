@@ -126,8 +126,8 @@ def ensure_db(redirect='/web/database/selector'):
     #
     # Simile Overrides
     #
-    if not db:
-       db = odoo.tools.config['db_name']
+    # if not db:
+    #    db = odoo.tools.config['db_name']
     # End overrides
     # if no database provided and no database in session, use monodb
     if not db:

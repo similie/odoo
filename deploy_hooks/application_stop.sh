@@ -3,5 +3,5 @@ set -e
 
 CONTAINER=="raphter"
 
-docker rm -f "$CONTAINER" || true
+docker rm -f raphter || true
 
