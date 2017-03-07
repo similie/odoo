@@ -103,6 +103,12 @@ def ensure_db(redirect='/web/database/selector'):
     # Ensure db is legit
     if db and db not in http.db_filter([db]):
         db = None
+    #
+    # Simile Overrides
+    #
+    if not db:
+        db = odoo.tools.config['db_name']
+    # End overrides
 
     if db and not request.session.db:
         # User asked a specific database on a new session.

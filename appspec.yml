@@ -38,8 +38,8 @@ files:
 permissions:
   - object: /
     pattern: "**"
-    owner: ubuntu
-    group: ubuntu
+    owner: root
+    group: root
     #mode: 464
     # type:
     #   - directory
@@ -55,7 +55,7 @@ permissions:
 hooks:
   ApplicationStop:
     - location:  deploy_hooks/application_stop.sh
-      runas: ubuntu
+      runas: root
   #  - location: deploy_hooks/kill_process.sh
   #    timeout: 1
   #    runas: root
