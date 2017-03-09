@@ -163,6 +163,9 @@ class WebsiteSlides(http.Controller):
 
     @http.route('''/slides/slide/<model("slide.slide", "[('channel_id.can_see', '=', True), ('datas', '!=', False), ('slide_type', '=', 'presentation')]"):slide>/pdf_content''', type='http', auth="public", website=True)
     def slide_get_pdf_content(self, slide):
+
+        #_logger.warning(slide.datas);
+
         response = werkzeug.wrappers.Response()
         response.data = slide.datas and slide.datas.decode('base64') or ''
         response.mimetype = 'application/pdf'

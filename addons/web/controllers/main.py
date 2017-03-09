@@ -100,6 +100,8 @@ def ensure_db(redirect='/web/database/selector'):
     # `http.db_filter()` in order to ensure it's legit and thus avoid db
     # forgering that could lead to xss attacks.
     db = request.params.get('db') and request.params.get('db').strip() 
+
+    # _logger.warning(request.env.user._is_superuser())
     # Ensure db is legit
     if db and db not in http.db_filter([db]):
         db = None

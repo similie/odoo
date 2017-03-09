@@ -19,8 +19,13 @@ $(document).ready(function () {
             this.slide_id = $viewer.find('#PDFSlideViewer').data('slideid');
             this.defaultpage = parseInt($viewer.find('#PDFSlideViewer').data('defaultpage'));
             this.canvas = $viewer.find('canvas')[0];
-
             this.pdf_viewer = new PDFSlidesViewer(this.slide_url, this.canvas, true);
+            if (location.protocol == 'https:') {
+                $(this.canvas).attr('baseURI', this.canvas.baseURI.replace('http', 'https'));
+            }
+
+            console.log("CHANGE NAME", location.protocol, $(this.canvas).attr('baseURI'));
+
             this.pdf_viewer.loadDocument().then(function(file_content){
                 self.on_loaded_file();
             });
@@ -45,7 +50,12 @@ $(document).ready(function () {
             },
             on_rendered_page: function(page_number){
                 if(page_number){
-                    this.$('#page_number').val(page_number);
+                    try {
+                        this.$('#page_number').val(page_number);
+                    } catch (e) {
+                        console.error(e);
+                        $('#page_number').val(page_number);
+                    } 
                 }
             },
             // page switching
